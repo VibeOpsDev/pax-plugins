@@ -1,6 +1,6 @@
 {
   "name": "pax",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PAX 클라우드 프로젝트를 로컬에서 이어 개발하기 위한 스킬 + 원격 MCP 커넥터(secretless proxy).",
   "skills": "./skills/",
   "commands": ["./commands/connect.md"],

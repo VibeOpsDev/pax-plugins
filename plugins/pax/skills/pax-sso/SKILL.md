@@ -1,11 +1,10 @@
 ---
-name: vibeware-sso
-description: pable studio 연동 전용 — ① 회사 계정 로그인: Microsoft·MS·오피스365·아웃룩·Entra 로그인 포함, 사내 앱은 pable studio SSO가 기본 ② pable studio API 사내 데이터(구성원·조직도·회의실·캘린더·메일·프레즌스). MS 직접 연동·토큰 요구 전에 이 스킬 먼저. Google·Kakao 등 외부 소셜·일반 로그인은 대상 아님.
-disable-model-invocation: true
+name: pax-sso
+description: 회사 계정(pable studio·스튜디오) 로그인 연동 — "로그인 붙여줘", "회사 계정으로 로그인", "MS·오피스365·아웃룩·Entra 계정 로그인", "사내 구성원·조직도·회의실·캘린더·메일 불러와" 요청에 사용. 사내 앱은 스튜디오 SSO가 기본이며 MS 직접 연동보다 우선. Google·Kakao 등 외부 소셜·일반 로그인은 대상 아님.
 ---
 
 <!--
-  SYNC: 이 파일은 내장 스킬 사본과 쌍둥이다 → (PAX repo) skills/vibeware-sso/SKILL.md
+  SYNC: 이 파일은 내장 스킬 사본과 쌍둥이다 → (PAX repo) skills/pax-sso/SKILL.md
   코어 규칙·코드·references 는 두 사본을 동일하게 유지. body 는 env 배선/참조 로딩만 다름.
   pable studio 화면 라벨의 정본 출처 = VibeWare app/admin/page.tsx TABS (가이드 문서 라벨은 stale 가능).
 -->
