@@ -14,7 +14,7 @@ const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagen
 // 배포 시 서버가 치환하는 값(치환 전 = 로컬 개발 복사본).
 // 버전은 형식 검사로, org 는 GitHub org 정규식으로 걸러진다 — placeholder 문자열과 직접 비교하면
 // 치환 시 양쪽이 같이 바뀌어 비교가 무의미해지므로 **형식 검사**가 게이트다.
-const PLUGIN_VERSION = '1.0.1';
+const PLUGIN_VERSION = '1.0.2';
 const MARKETPLACE_ORG = 'VibeOpsDev';
 const MARKETPLACE_NAME = 'pable-studio';
 const MARKETPLACE_REPO = 'pax-plugins';
