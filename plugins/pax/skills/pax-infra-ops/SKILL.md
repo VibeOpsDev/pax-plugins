@@ -1,6 +1,6 @@
 ---
 name: pax-infra-ops
-description: Supabase/Vercel 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. "테이블 추가", "스키마 확인", "RLS 확인", "배포해줘", "환경변수 등록/확인", "배포 왜 실패했어", "PR 게이트 상태", "스토리지 버킷", "service_role 키" 등 인프라 작업에 사용.
+description: Supabase/Vercel/포탈 등록 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. "테이블 추가", "스키마 확인", "RLS 확인", "배포해줘", "환경변수 등록/확인", "배포 왜 실패했어", "PR 게이트 상태", "스토리지 버킷", "service_role 키", "서비스 등록", "SSO 키 신청" 등 인프라 작업에 사용.
 ---
 # 인프라 작업은 PAX MCP로 (secretless)
 
@@ -10,6 +10,7 @@ description: Supabase/Vercel 조회·생성·배포·환경변수·스토리지�
 - 연결 상태: `status` / 공개 env: `get_public_env`
 - 스키마: `get_supabase_schema` / RLS(로컬에서 데이터 안 보일 때 진단): `get_rls_status` / 마이그레이션: `get_migrations`
 - 스토리지 버킷 목록: `list_storage_buckets`
+- 포탈 서비스 등록 상태·서비스 ID: `get_portal_registration`
 - Vercel 배포 상태: `get_vercel_status` / 배포 실패 로그: `get_deploy_logs`
 - Vercel 환경변수 **키 이름** 목록: `list_vercel_env` (보안상 값은 못 봅니다 — 키 이름만)
 - PR 게이트 상태: `get_pr_gate_status`
@@ -19,6 +20,9 @@ description: Supabase/Vercel 조회·생성·배포·환경변수·스토리지�
 - 스토리지 버킷 생성: `create_storage_bucket`
 - Vercel 환경변수 설정: `set_vercel_env` / 삭제: `unset_vercel_env`
 - production 재배포: `request_vercel_deploy`
+- 포탈(pable studio) 서비스 등록: `register_portal_service` — **`confirmedNew` 필요**(사용자가 포탈에서 직접 등록해 둔 경우 중복 등록이 되므로 먼저 확인)
+- 포탈 SSO 키 신청: `request_portal_sso_key` — 연동 켜기가 **비가역**이라 `enableConfirmed` 필요 / 승인 후 수령·배선: `claim_portal_sso_key` — **수령 누적 5회 한도**, 재시도 루프 금지
+  - 자세한 순서·주의는 `pax-sso` 스킬을 따르세요(로그인 연동 전반).
 
 파괴적 작업(테이블 삭제 등)은 도구로 제공되지 않으며 PAX 웹에서 승인이 필요합니다. 권한 거부(403)면 사용자의 역할/GitHub 권한을 확인하도록 안내하세요(거부 시 연결이 자동 취소될 수 있음 — 연결 코드로 재연결).
 

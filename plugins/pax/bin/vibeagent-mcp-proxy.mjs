@@ -24,7 +24,7 @@ const TOKEN_PATH = join(homedir(), '.config', 'vibeagent', `${key}.json`);
 
 const PROTOCOL_VERSION = '2025-06-18';
 // version 은 마켓플레이스 배포 시 아래 placeholder 가 실제 버전으로 치환됨(단일 소스: src/lib/pluginVersion.ts).
-const SERVER_INFO = { name: 'pax-local-ai', version: '1.0.2' };
+const SERVER_INFO = { name: 'pax-local-ai', version: '1.1.0' };
 // 서버가 "이 사용자가 구버전인가"를 알 수 있는 유일한 신호. 서버는 **헤더 부재 = 기능 도입 이전 버전**으로
 // 판정하므로 값이 이상해도 보내는 것 자체는 유지한다(baked 상수라 실패할 수 없다).
 // 비-ASCII/제어문자가 섞이면 fetch 가 TypeError 를 던져 **전 도구 호출이 실패**하므로 필터는 필수.
@@ -159,6 +159,50 @@ const TOOLS = [
     description:
       '이 프로젝트의 회사 포탈(VibeWare) 서비스 등록 상태와 서비스 ID(SSO 코드의 service/aud 클레임 값)를 조회합니다(read-only). VibeWare SSO 연동 코드를 만들기 전, 서비스 ID 가 필요할 때 먼저 호출하세요.',
     inputSchema: NOARGS,
+  },
+  {
+    name: 'register_portal_service',
+    description:
+      '이 프로젝트를 회사 포탈(pable studio)에 서비스로 등록합니다(SSO 연동은 꺼진 중립 상태로 생성, 멱등). get_portal_registration 이 registered:false 이고, 사용자가 pable studio에서 직접 등록한 적이 없음을 확인한 뒤 confirmedNew:true 로 호출하세요.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: '포탈에 표시할 서비스 한 줄 소개 (선택)' },
+        confirmedNew: {
+          type: 'boolean',
+          description: '사용자에게 "pable studio에서 직접 등록한 적 없음"을 확인받았을 때만 true',
+        },
+      },
+    },
+  },
+  {
+    name: 'request_portal_sso_key',
+    description:
+      '이 프로젝트의 포탈 SSO 연동을 켜고(꺼져 있으면 — 한 번 켜면 끌 수 없음) 서명 키 발급을 신청합니다. 사용자 동의를 받은 뒤 enableConfirmed:true 로 호출하세요. 승인은 관리자(사람)가 합니다.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: {
+          type: 'boolean',
+          description: '이전 신청이 거절/회수된 뒤(NONE 복귀) 사용자가 재신청을 명시적으로 원할 때만 true',
+        },
+        enableConfirmed: { type: 'boolean', description: 'SSO 연동 켜기(비가역)에 사용자가 동의했을 때만 true' },
+      },
+    },
+  },
+  {
+    name: 'claim_portal_sso_key',
+    description:
+      '승인된(APPROVED) SSO 키를 수령해 이 프로젝트의 설정값 저장소와 배포(Vercel) 환경에 SSO_SECRET·SSO_SERVICE_ID 로 저장합니다(키 값은 반환되지 않고 로컬 .env 에도 들어가지 않습니다). 수령은 누적 5회 한도이니 재시도 루프 금지.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: {
+          type: 'boolean',
+          description: '이미 SSO_SECRET 이 있어도 새 키로 교체 배선할 때만 true (재발급 승인 완료를 사용자가 명시한 경우)',
+        },
+      },
+    },
   },
 ];
 

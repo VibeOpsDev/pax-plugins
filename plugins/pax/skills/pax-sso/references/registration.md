@@ -10,12 +10,12 @@
 
 | 단계 | 주체 |
 |---|---|
-| 서비스 등록 생성 | 자동 — 프로젝트 생성 시 "pable studio에 서비스 등록" 체크, 또는 웹 채팅 `register_portal_service` (멱등 — 재호출 무해). **SSO 연동은 꺼진 중립 상태로 생성** |
-| 등록 상태·서비스 ID 조회 | 자동 — `get_portal_registration` (웹 채팅·로컬 MCP 동일 이름, `supportsSso` 포함) |
-| SSO 연동 켜기 | 자동(웹) — `request_portal_sso_key` 가 신청 직전 활성화. **비가역(끄기 불가 — 해제는 등록 삭제뿐)이므로 반드시 사용자 확인 후** |
-| SSO 키 발급 신청 | 자동(웹) — `request_portal_sso_key` (**스코프 없는 기본 키만**) / 스코프가 필요한 신청은 사람이 포탈에서 |
+| 서비스 등록 생성 | 자동 — 프로젝트 생성 시 "pable studio에 서비스 등록" 체크, 또는 `register_portal_service` (웹·로컬 공통, 멱등 — 재호출 무해. **`confirmedNew` 필요**). **SSO 연동은 꺼진 중립 상태로 생성** |
+| 등록 상태·서비스 ID 조회 | 자동 — `get_portal_registration` (웹 채팅·로컬 MCP 동일 이름, `supportsSso`·`revealCount` 포함) |
+| SSO 연동 켜기 | 자동(웹·로컬 공통) — `request_portal_sso_key` 가 신청 직전 활성화. **비가역(끄기 불가 — 해제는 등록 삭제뿐)이므로 반드시 사용자 확인 후** |
+| SSO 키 발급 신청 | 자동(웹·로컬 공통) — `request_portal_sso_key` (**스코프 없는 기본 키만**) / 스코프가 필요한 신청은 사람이 포탈에서 |
 | 발급 승인 | **사람 — 포탈 관리자 (유일한 사람 필수 단계)** |
-| 키 수령·설정값 배선 | 자동(웹) — `claim_portal_sso_key` (SSO_SECRET·SSO_SERVICE_ID 저장, 값 미노출, 누적 5회 한도 공유) / 수동 폴백 = 포탈 "확인하기" + manage_env request_input |
+| 키 수령·설정값 배선 | 자동(웹·로컬 공통) — `claim_portal_sso_key` (SSO_SECRET·SSO_SERVICE_ID 저장, 값 미노출, 누적 5회 한도 공유) / 수동 폴백 = 포탈 "확인하기" + manage_env request_input |
 | 스코프 변경(재발급=회전) | 사람 — 포탈에서 스코프 선택 후 재발급 → 승인 후 `claim_portal_sso_key` 로 교체 배선 |
 | 등록 수정·삭제 | 사람 — 포탈 대시보드 (도구 대행 없음) |
 
@@ -23,10 +23,16 @@
 스코프는 파급이 커서 사용자가 포탈 화면에서 직접 선택·신청한다 — AI 가 스코프 신청을 대행하지
 않는다. 스코프 재발급(회전) 완료 후 사용자가 알려주면 `claim_portal_sso_key` 로 새 키를 교체한다.
 
-로컬(플러그인) 환경엔 조회 도구만 있다 — 등록·신청·수령은 웹 PAX 채팅 또는 pable studio에서.
-웹 `claim_portal_sso_key` 는 프로젝트 설정값 저장소(웹 [코드] 탭 `.env.local` 로 편집 권한자에게
-보임)와 배포(Vercel) 환경에 저장한다 — **사용자 로컬 PC 의 `.env` 파일에는 들어가지 않는다**
-(로컬 실왕복 테스트 값은 사용자가 직접 넣어야 함).
+등록·신청·수령 도구는 **웹 채팅과 로컬 브리지 양쪽에 같은 이름으로 있다**(1.1.0 부터).
+`claim_portal_sso_key` 는 프로젝트 설정값 저장소(웹 [코드] 탭 `.env.local` 로 편집 권한자에게
+보임)와 배포(Vercel) 환경에 저장한다 — **사용자 로컬 PC 의 `.env` 파일에는 들어가지 않는다.**
+로컬 실왕복 테스트 값은 사용자가 직접 넣어야 하고, 그 값은 **웹 [코드] 탭 `.env.local` 에서 복사**하는
+것이 우선이다(포탈 "확인하기" 는 누적 5회 한도를 소모한다).
+
+⚠️ **사용자가 pable studio에서 직접 만든 등록은 이 도구들로 조회·신청·수령이 전부 불가능하다**
+(포탈이 bearer 접근을 등록 출처로 제한한다 — 목록·id 조회·중복 응답 세 경로 모두). `registered:
+false` 를 "미등록" 으로 단정하지 말고 사용자에게 직접 등록 여부를 먼저 확인할 것. 이미 있으면
+새로 만들지 말고 카드의 "서비스 ID" 값을 받아 `SSO_SERVICE_ID` 만 배선한다.
 
 ## SSO 연동 플래그 (`supportsSso`) — 상태머신보다 먼저
 
@@ -41,14 +47,14 @@
 
 `NONE → REQUESTED → APPROVED → REVEALED`
 
-- **NONE**: 미신청 — 웹 채팅 `request_portal_sso_key` 로 신청할 수 있다. 단 **REQUESTED/
+- **NONE**: 미신청 — `request_portal_sso_key` 로 신청할 수 있다(웹·로컬 공통). 단 **REQUESTED/
   APPROVED 를 본 적이 있는데 NONE 으로 돌아왔다면 관리자 거절/신청 회수 신호다** — 자동
   재신청을 유도하지 마라(재신청은 관리자 알림을 다시 발송해 핑퐁이 된다). 도구도 신청 이력이
   있으면 거부한다 — 사용자에게 표면화하고, 사용자가 명시하면 `force: true` 로만 재신청.
 - **REQUESTED**: 관리자 승인 대기 — 사람 절차라 수 시간~수 일 걸릴 수 있다. 기다리는 동안
   DEV_BYPASS mock 으로 화면을 먼저 보여준다 (SKILL.md 규칙 0).
-- **APPROVED**: 승인됨 — 웹 채팅 `claim_portal_sso_key` 로 수령·배선한다(또는 사용자가
-  포탈에서 "확인하기"로 직접 수령 — 수동 폴백).
+- **APPROVED**: 승인됨 — `claim_portal_sso_key` 로 수령·배선한다(웹·로컬 공통. 또는 사용자가
+  포탈에서 "확인하기"로 직접 수령 — 수동 폴백, 5회 한도 소모).
 - **REVEALED**: 수령 완료 — `manage_env list_keys`(웹) 또는 env 파일(로컬)로 `SSO_SECRET`
   배선 여부를 확인한다. 배선이 비어 있으면 `claim_portal_sso_key` 가 재수령·배선한다
   (수령 카운터 1 소모). **이 상태에서 재발급 신청은 회전** — 도구가 차단하며 포탈에서 사람이.

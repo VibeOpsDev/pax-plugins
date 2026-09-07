@@ -22,7 +22,7 @@ description: 회사 계정(pable studio·스튜디오) 로그인 연동 — "로
 
 **로그인 라우팅 규칙** — "Microsoft/MS 계정 로그인"·"오피스365/아웃룩 계정 로그인"·"Entra(Azure AD) 로그인"·"회사 계정 로그인" 요청은 **전부 1번(pable studio SSO)이 기본 경로다**. pable studio 자체가 회사 Microsoft(Entra) 계정 SSO 라서, 사내 사용자 대상 앱은 pable studio 로그인이 곧 MS 로그인이다 — MS 직접 연동을 먼저 제안하지 마라(비개발자 사용자는 이 구분을 모른다). 판별이 필요하면 질문은 하나만: **"이 앱은 회사 동료들이 쓰나요, 회사 밖 사람들도 쓰나요?"** 회사 동료 대상이면 그대로 pable studio SSO 로 진행하고(추가 확인 불필요), 회사 밖 사용자가 각자 개인/타조직 Microsoft 계정으로 로그인해야 하는 앱만 직접 MS 연동 대상이다(아래 "직접 MS 연동은 명시 요청 시에만" 준수).
 
-**연동 상태 선확인 (로그인 코드보다 먼저)** — pable studio SSO 로 진행하기로 했으면 `get_portal_registration` MCP 도구로 이 프로젝트의 연동 상태(`supportsSso`)부터 확인한다. 신규 프로젝트는 **SSO 연동이 꺼진 채(중립) 등록**되므로 대개 꺼져 있다 — 이때는 코드를 만들기 전에 **"pable studio SSO 연동을 켜고 키 발급을 신청해야 해요. 한 번 켜면 끌 수 없어요(해제는 등록 삭제뿐)"라고 안내하고 사용자 확인을 받은 뒤**, 웹 PAX 채팅에서 연동 켜기+신청(`request_portal_sso_key`)을 진행하도록 안내한다(로컬 브리지는 조회만 가능 — 웹 도구도 사용자 동의 없인 실행을 거부한다). 확인 없이 켜도록 유도하지 마라. 단 **사용자가 "pable studio가 아니라 진짜 Microsoft 로그인"이라고 명시하면 이 안내·확인 흐름을 강요하지 말고 막지도 마라** — 그대로 직접 MS 연동 경로로 진행한다.
+**연동 상태 선확인 (로그인 코드보다 먼저)** — pable studio SSO 로 진행하기로 했으면 `get_portal_registration` MCP 도구로 이 프로젝트의 연동 상태(`supportsSso`)부터 확인한다. 신규 프로젝트는 **SSO 연동이 꺼진 채(중립) 등록**되므로 대개 꺼져 있다 — 이때는 코드를 만들기 전에 **"pable studio SSO 연동을 켜고 키 발급을 신청해야 해요. 한 번 켜면 끌 수 없어요(해제는 등록 삭제뿐)"라고 안내하고 사용자 확인을 받은 뒤**, `request_portal_sso_key` 를 `enableConfirmed: true` 로 호출한다(연동 켜기+신청을 함께 수행 — 여기서 바로 되며 웹으로 건너갈 필요 없다). 동의 없이 호출하면 도구가 거부한다. 확인 없이 켜도록 유도하지 마라. 단 **사용자가 "pable studio가 아니라 진짜 Microsoft 로그인"이라고 명시하면 이 안내·확인 흐름을 강요하지 말고 막지도 마라** — 그대로 직접 MS 연동 경로로 진행한다.
 
 **사내 데이터 라우팅 규칙** — 회사 구성원·임직원·조직도·동료 목록·회의실 현황·사내 캘린더/메일/연락처/자리 여부(프레즌스) 등 **실제 사내 시스템의 데이터를 불러오려는 요청이면 2번으로 진행**한다. MS Graph 직접 연동·MS 토큰 입력을 유도하지 말고, 브라우저 개발자도구(Network 탭)에서 API 주소나 토큰을 채집하도록 안내하지도 마라. 단:
 
@@ -47,7 +47,7 @@ v2 가 필요한 경우는 하나뿐이다 — **한 사용자가 앱 안에서 
 
 ## 규칙 0 — 선행조건 (코드 쓰기 전 필수)
 
-서비스 **등록 상태는 자동으로 확인할 수 있다**(`get_portal_registration` MCP 도구). 등록 생성·키 신청·수령/배선은 **웹 PAX 채팅의 도구**(`register_portal_service`·`request_portal_sso_key`·`claim_portal_sso_key`)가 대행하고, **관리자 승인만 사람 절차다** — 로컬 브리지는 조회 전용이니 그 작업들은 웹 채팅으로 안내한다. 웹의 `claim_portal_sso_key` 는 프로젝트 설정값 저장소와 배포(Vercel) 환경에 키를 저장한다 — **사용자 로컬 PC 의 `.env` 파일에는 들어가지 않고**, **`SSO_SECRET` 같은 서버 서명키는 브리지가 로컬로 내려주지 않는다**(브리지가 주는 건 Supabase 값뿐) — 로컬 실왕복 테스트용 값은 사용자가 pable studio에서 확인해 직접 줘야 한다.
+등록 상태 확인·등록 생성·키 신청·수령/배선이 **전부 MCP 도구로 여기서 된다**(`get_portal_registration`·`register_portal_service`·`request_portal_sso_key`·`claim_portal_sso_key`) — **관리자 승인만 사람 절차다.** 단 `claim_portal_sso_key` 는 프로젝트 설정값 저장소와 배포(Vercel) 환경에만 키를 저장한다 — **사용자 로컬 PC 의 `.env` 파일에는 들어가지 않고**, **`SSO_SECRET` 값 자체를 브리지가 내려주지도 않는다**(브리지가 주는 비밀은 Supabase 값뿐). 로컬 실왕복 테스트용 값은 아래 "로컬에서 SSO_SECRET 구하기" 순서로 받는다.
 
 1. **먼저 DEV_BYPASS mock으로 돌린다.** 실제 키가 없어도 `DEV_BYPASS_SSO=true`로 로그인·역할 등급이 도는 화면을 즉시 보여줄 수 있다. 코드는 이걸 전제로 먼저 작성해도 안전(런타임 throw 없음).
 2. **실제 SSO는 키가 있어야 한다.** 사용자가 아직 키가 없으면 아래 **"SSO 키 발급"** 워크스루로 안내. 키가 준비되면 아래 **env 배선**의 배포/로컬 경로로 넣는다.
@@ -70,26 +70,26 @@ v2 가 필요한 경우는 하나뿐이다 — **한 사용자가 앱 안에서 
 
 로컬 AI는 이 파일들을 **로컬 파일시스템에 직접 작성**한다.
 
-## SSO 키 발급 (승인만 사람 — 등록·신청·수령/배선은 웹 채팅 도구가 자동)
+## SSO 키 발급 (승인만 사람 — 등록·신청·수령/배선은 MCP 도구가 자동)
 
-관리자 승인만 사람 절차다. 로컬 브리지는 조회 전용 — 아래 도구 작업은 **웹 PAX 채팅**에서 진행하도록 안내한다. 순서(딥링크 `{PORTAL_URL}/dashboard/dev` — **`{PORTAL_URL}` 자리는 `get_portal_registration` 응답의 `portalUrl` 값으로 채워** 실제 링크로 안내한다. pable studio 주소를 사용자에게 묻지 마라):
+관리자 승인만 사람 절차다. 아래 도구 작업은 **이 대화에서 바로** 진행한다. 순서(딥링크 `{PORTAL_URL}/dashboard/dev` — **`{PORTAL_URL}` 자리는 `get_portal_registration` 응답의 `portalUrl` 값으로 채워** 실제 링크로 안내한다. pable studio 주소를 사용자에게 묻지 마라):
 
-1. **등록 확인** — `get_portal_registration` 으로 이 프로젝트의 pable studio 등록 여부를 확인한다. 미등록이면 웹 PAX 채팅에서 등록하도록 안내하거나(로컬 브리지로는 등록 불가 — **등록은 SSO 연동이 꺼진 중립 상태로 생성됨**), 사용자가 pable studio `{PORTAL_URL}/dashboard/dev` → **내 서비스** 카드에서 직접 등록(이름·URL·포트). ⚠️ **사용자가 pable studio에서 직접 만든 등록은 도구로 조회·신청되지 않는다**(다른 출처) — 그 등록으로 키를 받으려면 등록 수정에서 "SSO 연동"을 켜고 pable studio에서 직접 신청해야 한다.
-2. **연동 켜기 + 키 신청** — 사용자 확인(규칙 -1 "연동 상태 선확인") 후 웹 채팅의 `request_portal_sso_key` 가 대행한다: 연동이 꺼져 있으면 먼저 켜고(**비가역 — 한 번 켜면 끌 수 없음, 해제는 등록 삭제뿐**) 이어서 신청한다(**스코프 없는 기본 키만**). pable studio Bearer API(사내 데이터)까지 쓰려면 사용자가 pable studio 화면에서 필요한 스코프를 선택해 직접 신청/재발급해야 한다. 신청되면 상태가 "관리자 승인 대기 중"이 된다.
+1. **등록 확인** — `get_portal_registration` 으로 확인한다. `registered: false` 여도 **"등록 안 됨" 으로 단정하지 마라** — 이 도구는 PAX 가 만든 등록만 본다(아래 "pable studio에 직접 등록해 둔 경우" 참조). 사용자에게 직접 등록 여부를 물어 **없다고 하면** `register_portal_service` 를 `confirmedNew: true` 로 호출한다(**등록은 SSO 연동이 꺼진 중립 상태로 생성됨**).
+2. **연동 켜기 + 키 신청** — 사용자 확인(규칙 -1 "연동 상태 선확인") 후 `request_portal_sso_key` 를 `enableConfirmed: true` 로 호출한다: 연동이 꺼져 있으면 먼저 켜고(**비가역 — 한 번 켜면 끌 수 없음, 해제는 등록 삭제뿐**) 이어서 신청한다(**스코프 없는 기본 키만**). pable studio Bearer API(사내 데이터)까지 쓰려면 사용자가 pable studio 화면에서 필요한 스코프를 선택해 직접 신청/재발급해야 한다. 신청되면 상태가 "관리자 승인 대기 중"이 된다.
 3. **관리자 승인** — **관리자**(다른 사람)가 `{PORTAL_URL}/admin` → **"SSO 발급 승인"** 탭에서 승인 → 상태 "승인됨 — 확인 대기". 여기만 사람이 한다.
-4. **수령·배선** — 웹 채팅의 `claim_portal_sso_key` 가 키를 수령해 프로젝트 설정값 저장소 + 배포(Vercel) 환경(`SSO_SECRET`·`SSO_SERVICE_ID`)으로 자동 저장한다(값 미노출) + 재배포. **사용자 로컬 PC 의 `.env.development.local` 에는 안 들어간다** — 로컬 실왕복 테스트가 필요하면 사용자가 pable studio **"확인하기"**(모달 "SSO 서명 키 확인")로 복사한 값을 받아 아래 env 배선의 로컬 경로로 넣는다. 수령·확인은 **누적 5회 한도**(초과 시 재발급 신청만이 복구).
-5. **스코프가 필요해지면(재발급=회전)** — 사용자가 pable studio에서 스코프 선택 후 재발급 신청 → 관리자 승인 → 웹 채팅 `claim_portal_sso_key` 로 새 키 교체 배선 → 재배포. 로컬 값도 그때 새 값으로 교체.
+4. **수령·배선** — `claim_portal_sso_key` 가 키를 수령해 프로젝트 설정값 저장소 + 배포(Vercel) 환경(`SSO_SECRET`·`SSO_SERVICE_ID`)으로 자동 저장한다(값 미노출) + 재배포. **사용자 로컬 PC 의 `.env.development.local` 에는 안 들어간다** — 로컬 실왕복 테스트에 필요한 키는 아래 "로컬에서 SSO_SECRET 구하기" 순서로 받는다.
+5. **스코프가 필요해지면(재발급=회전)** — 사용자가 pable studio에서 스코프 선택 후 재발급 신청 → 관리자 승인 → `claim_portal_sso_key` 를 `force: true` 로 호출해 새 키 교체 배선 → 재배포. 로컬 값도 그때 새 값으로 교체.
 
 **승인 대기가 "막힘"이 되지 않게** — 3에서 승인을 기다리는 동안에도 아래 DEV_BYPASS mock으로 앱이 도는 걸 보여주고, 승인 후 4로 전환한다.
 
-> **⚠️ 스코프 추가 = 키 회전** — 이미 키를 수령(REVEALED)한 뒤 스코프를 바꿔 재발급 신청하면 **이전 키가 즉시 무효화**돼 배포된 앱의 로그인이 그 자리에서 끊긴다. 새 키 수령 → `SSO_SECRET` 교체 → 재배포까지 한 흐름으로 안내한다(승인 후 웹 채팅 `claim_portal_sso_key` 가 교체 배선을 대행). 그래서 회전은 도구가 먼저 제안하지 않는다 — 사용자가 pable studio에서 진행한다.
+> **⚠️ 스코프 추가 = 키 회전** — 이미 키를 수령(REVEALED)한 뒤 스코프를 바꿔 재발급 신청하면 **이전 키가 즉시 무효화**돼 배포된 앱의 로그인이 그 자리에서 끊긴다. 새 키 수령 → `SSO_SECRET` 교체 → 재배포까지 한 흐름으로 안내한다(승인 후 `claim_portal_sso_key` 를 `force: true` 로 호출해 교체 배선). 그래서 회전은 도구가 먼저 제안하지 않는다 — 사용자가 pable studio에서 진행한다.
 
 ### 내 "서비스 ID" 확인 (먼저 도구로 조회 — 사용자에게 바로 묻지 마라)
 
 pable studio에 등록된 식별자이고 **지어내는 값이 아니다.** JWT 의 `service`·`aud` 클레임에 실리는 값과 항상 같다.
 
-1. **`get_portal_registration` 도구를 먼저 호출한다** (웹 채팅·로컬 MCP 동일 이름). 등록돼 있으면 응답의 `serviceClaimHint` 가 곧 이 값이다 — `SERVICE_ID` 상수(또는 `SSO_SERVICE_ID` env)에 그대로 넣는다.
-2. 미등록(`registered: false`)이면: 웹 채팅에선 `register_portal_service` 로 대행 등록할 수 있고(사용자 동의 후 — 등록만, 키 발급은 별개), 로컬에선 웹 PAX 채팅 또는 pable studio 직접 등록을 안내한다.
+1. **`get_portal_registration` 도구를 먼저 호출한다** (웹 채팅·로컬 MCP 동일 이름·동일 동작). 등록돼 있으면 응답의 `serviceClaimHint` 가 곧 이 값이다 — `SERVICE_ID` 상수(또는 `SSO_SERVICE_ID` env)에 그대로 넣는다.
+2. `registered: false` 면: 사용자에게 직접 등록 여부를 먼저 묻고, 없다고 하면 `register_portal_service` 를 `confirmedNew: true` 로 호출한다(등록만 — 키 발급은 별개). 이미 있다고 하면 아래 "pable studio에 직접 등록해 둔 경우" 로 간다.
 3. 도구가 조회 실패(일시 오류)를 반환하면 **미등록으로 단정하지 말고**, 사용자가 pable studio `{PORTAL_URL}/dashboard/dev` → "내 서비스" 카드의 **"서비스 ID" 칩**(라벨 + 모노스페이스 값 + 복사 아이콘)을 확인해 알려주게 한다. 칩은 "SSO 연동"이 켜져 있어야 보인다 — **자동 등록 직후는 연동 꺼짐이라 칩이 없을 수 있으니**, 그 경우 도구 재조회가 유일한 확인 경로다(잠시 후 재시도).
 
 - **`serviceClaimPinned: false` = 잠정값** — 관리자가 승인할 때 다른 최종 ID 로 확정할 수 있다.
@@ -100,9 +100,38 @@ pable studio에 등록된 식별자이고 **지어내는 값이 아니다.** JWT
 
 **희망 ID 가 기존 정식 서비스와 겹치면** — 대행 등록이 자동으로 다른 식별자(`-2` 접미 등)를 시도하고, 최종 ID 는 관리자가 승인 단계에서 확정한다. 도구 재조회 값을 따르면 된다.
 
-## env 배선 (SSO_SECRET은 브리지가 안 내려줌)
+### pable studio에 직접 등록해 둔 경우 (도구로 안 보인다)
 
-`SSO_SECRET`은 브리지 도구로 자동으로 못 받는다 — 브리지가 내려주는 건 Supabase 값(`get_public_env`의 anon key·URL, 편집자/소유자의 `get_service_role_key`)뿐이고 SSO 키는 대상이 아니다. 사용자가 5단계에서 복사한 키를 받아 넣는다 — **두 경로**:
+`get_portal_registration` 은 **PAX 가 만든 등록만** 조회할 수 있다. 사용자가 pable studio 대시보드에서 직접 만든 등록은 조회·신청·수령이 **전부 불가능**하고 `registered: false` 로 보인다. 그 상태에서 `register_portal_service` 를 부르면 같은 repo 에 **두 번째 등록**이 생겨 서비스 ID 가 갈린다(식별자가 다르면 충돌 에러도 안 난다). 그래서 `confirmedNew` 확인이 필요하다.
+
+사용자가 "직접 등록했다" 고 하면 **새로 만들지 말고** 이렇게 한다:
+
+1. `{PORTAL_URL}/dashboard/dev` → **내 서비스** 카드에서 **"서비스 ID" 칩 값**을 알려달라고 한다.
+2. **그 카드의 GitHub 주소가 이 프로젝트의 repo 와 같은지 사용자에게 확인받는다** — PAX 는 이걸 대조할 수 없으니 사람이 확인해야 한다. repo 주소를 화면에 적어 주고 비교하게 하라.
+3. 받은 값이 `^[a-z][a-z0-9-]{0,31}$` 형식인지 확인한다. 한글·공백이 섞였으면 서비스 **이름**을 잘못 복사한 것이니 다시 요청한다.
+4. `set_vercel_env` 로 `SSO_SERVICE_ID` 배선 → 키는 사용자가 카드 "확인하기"로 준 값을 `SSO_SECRET` 으로 → `PORTAL_URL` 도 **직접** 배선한다(`get_portal_registration` 응답의 `portalUrl` 값 — 이 경로는 `claim_portal_sso_key` 를 거치지 않아 자동 배선이 없다) → `request_vercel_deploy`.
+5. **로그인 1회로 확정한다.** 서비스 ID 가 틀리면 콜백의 `[sso] SERVICE_ID 불일치` 경고에 pable studio가 준 정답(`received`)이 찍히니, 그 값으로 `SSO_SERVICE_ID` 를 교체하면 된다.
+
+⚠️ 이 경로에서는 `supportsSso`·`ssoKeyStatus`·`revealCount` 를 **전부 조회할 수 없다.** "키를 알려주세요" 라고만 하면, SSO 연동이 꺼져 있어 "확인하기" 버튼 자체가 없는 사용자가 그 자리에서 막힌다. 선결 조건부터 안내하라: 카드에서 SSO 연동이 켜져 있는지 → 키를 신청했는지 → 관리자 승인이 났는지 → 그 다음 "확인하기". 남은 확인 횟수도 모르므로 **추측하지 말고** "누적 5회 한도" 라는 사실만 말한다.
+
+## 로컬에서 SSO_SECRET 구하기 (순서를 지킬 것)
+
+`SSO_SECRET`은 브리지 도구로 못 받는다 — 브리지가 내려주는 건 Supabase 값(`get_public_env`의 anon key·URL, 편집자/소유자의 `get_service_role_key`)뿐이다. 그래서 사용자에게 값을 받아야 하는데, **어디서 받는지가 중요하다.**
+
+1. **PAX 웹 작업공간의 `.env.local`에서 복사** ← **먼저 이걸 안내한다.**
+   - PAX 웹에서 이 프로젝트를 열면 파일 목록에 `.env.local`이 있고, 거기 `SSO_SECRET`이 그대로 보인다(편집자 이상 + GitHub 쓰기 권한).
+   - **pable studio 확인 횟수를 소모하지 않는다.** 이미 `claim_portal_sso_key`로 배선된 프로젝트면 항상 이 경로가 가능하다.
+2. **pable studio "확인하기"** (1이 안 될 때만)
+   - `{PORTAL_URL}/dashboard/dev` → 내 서비스 카드 → **"확인하기"**(모달 "SSO 서명 키 확인").
+   - ⚠️ **누적 5회 한도**이고 시간이 지나도 복구되지 않는다. 소진되면 재발급(회전)뿐인데 **회전하면 배포된 앱 로그인이 즉시 끊긴다.**
+   - 남은 횟수는 `get_portal_registration` 응답의 `revealCount`/`revealLimit`으로 확인해 사용자에게 알린다. 단 **사용자가 pable studio에서 직접 등록한 서비스는 이 값을 조회할 수 없다** — 그때는 "누적 5회 한도"라는 사실만 말하고 남은 횟수를 추측하지 마라.
+3. **아예 키 없이** — 실왕복이 급하지 않으면 아래 `DEV_BYPASS_SSO=true` mock으로 먼저 화면을 만든다.
+
+받은 값은 **채팅에 다시 출력하지 말고** 파일에만 쓴다(secret-safety).
+
+## env 배선
+
+사용자에게 받은 키를 넣는다 — **두 경로**:
 
 - **배포 SSO** (실제 서비스에서 동작): MCP `set_vercel_env`로 올린다.
   - `set_vercel_env` `SSO_SECRET` = <사용자가 준 값> / `PORTAL_URL` = <`get_portal_registration` 응답의 `portalUrl` 값 — 사용자에게 묻지 않는다> / (선택) `ALLOWED_TENANT_IDS`.
