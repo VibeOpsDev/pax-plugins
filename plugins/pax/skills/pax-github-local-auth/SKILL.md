@@ -11,8 +11,9 @@ private repo는 **사용자 본인의 GitHub 인증**으로 clone/push 합니다
 - 로그인은 **AI가 디바이스 플로우를 돌려 채팅으로 유도**하세요 — "로그인하세요"로 끝내지 말 것:
   1. `gh auth login --hostname github.com --git-protocol https --web`을 **백그라운드로 실행**(완료까지 블로킹되므로 포그라운드 금지).
   2. 출력의 1회용 코드(XXXX-XXXX)를 사용자에게 전달: "브라우저에서 https://github.com/login/device 를 열고 이 코드를 입력하세요."
-  3. 완료 답을 받으면 `gh auth status`로 검증. (코드는 약 15분 후 만료 — 만료 시 같은 명령 재실행.)
-  - 백그라운드 실행이 안 되는 환경이면 같은 명령을 사용자가 터미널에 직접 붙여넣도록 안내. 편집기(VS Code 등)의 GitHub 로그인도 대안.
+  3. 완료 답을 받으면 `gh auth status`로 검증한 뒤 **`gh auth setup-git`을 실행**(멱등). 백그라운드(비대화형) 로그인은 git 자격증명 연결 프롬프트를 건너뛰므로, 이 명령이 없으면 `gh`는 로그인돼 있어도 `git clone`/`push`가 인증 실패합니다. (코드는 약 15분 후 만료 — 만료 시 같은 명령 재실행.)
+  - 백그라운드 실행이 안 되는 환경이면 같은 명령을 사용자가 터미널에 직접 붙여넣도록 안내(터미널 대화형 로그인은 git 연결을 물어보므로 `setup-git` 은 생략 가능). 편집기(VS Code 등)의 GitHub 로그인도 대안.
+- 비공개 플러그인 마켓플레이스를 이미 추가한 사용자는 로그인이 돼 있는 경우가 많습니다 — `git ls-remote` 가 성공하면 이 단계를 통째로 건너뛰세요.
 - push는 **develop 브랜치로만**. main 직접 push 금지(Vercel 비멤버 author 차단 + 배포 정책).
 - gh CLI는 **clone/push 인증 + 조회 전용**입니다. **조회는 허용** — `gh run list`/`gh run view`/`gh pr checks`/`gh pr view --comments` 로 빌드·게이트 로그를 더 깊이 볼 수 있습니다(인프라 디버깅용). 하지만 **PR 생성·머지(`gh pr create`/`gh pr merge`)는 금지** — develop에 push 하면 워크플로우가 PR·보안 게이트·머지를 자동 처리합니다(수동 PR은 충돌·게이트 우회).
 - 권한 오류(403/404)면 사용자의 GitHub 계정이 해당 org repo 멤버인지, SAML SSO 인가가 유효한지 확인하도록 안내.

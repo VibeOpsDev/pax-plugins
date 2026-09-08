@@ -15,11 +15,11 @@ description: PAX 프로젝트를 로컬에 clone하고 환경변수를 설정한
 - 도구 응답에 **`[사용자 안내 시작]`~`[사용자 안내 끝]`** 구간이 있으면(플러그인 업데이트·재설치 안내) 그 사이 내용만 사용자에게 **그대로** 전달하고, 지시문 줄은 전달하지 마세요. **업데이트 명령을 대신 실행하지 말고**(터미널 포함) 이 준비 작업을 계속 진행하세요. 이 안내는 이후 도구 응답에도 붙을 수 있는데, **한 번만 전달**하고 반복 재촉하지 마세요.
 
 ## 2. GitHub 인증 (private repo)
-- 먼저 `git ls-remote <repoUrl>`로 기존 인증을 확인 — 성공하면 이 단계는 건너뜁니다.
+- 먼저 `git ls-remote <repoUrl>`로 기존 인증을 확인 — 성공하면 이 단계는 건너뜁니다(비공개 마켓플레이스에서 플러그인을 설치한 사용자는 보통 이미 로그인돼 있어요).
 - 인증이 없으면 "인증 정보가 없다"로 멈추지 말고 **AI가 디바이스 로그인을 직접 진행해 채팅으로 이끌어 주세요**(상세: skill pax-github-local-auth):
   1. gh 미설치면 AI가 설치: macOS `brew install gh` / Windows `winget install --id GitHub.cli` / Linux 배포판 패키지(sudo 필요 시 명령 제시 후 사용자 실행). 패키지 매니저가 없으면 https://cli.github.com 안내로 폴백.
   2. `gh auth login --hostname github.com --git-protocol https --web`을 **백그라운드로 실행**(사용자가 브라우저에서 마칠 때까지 블로킹되므로 포그라운드 금지) → 출력의 1회용 코드(XXXX-XXXX)를 읽어 사용자에게 전달: "브라우저에서 https://github.com/login/device 를 열고 이 코드를 입력하세요".
-  3. 사용자가 완료를 알리면 `gh auth status`로 검증 후 진행.
+  3. 사용자가 완료를 알리면 `gh auth status`로 검증한 뒤 **`gh auth setup-git`을 실행**하세요(멱등). 백그라운드(비대화형) 로그인은 git 자격증명 연결을 묻지 않고 건너뛰어서, 이 명령이 없으면 `gh`는 로그인돼 있어도 `git clone`이 인증 실패합니다.
 - **PAX 서버 GitHub 토큰을 요청하지 마세요.**
 
 ## 3. Clone + 브랜치
