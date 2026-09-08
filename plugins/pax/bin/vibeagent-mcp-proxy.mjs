@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 // stdio 모드엔 CLAUDE_CODE_MCP_SERVER_URL 이 없으므로 빌드 시 치환된 URL 을 사용.
-const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
+const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent.vercel.app/api/local-ai/mcp';
 const key = createHash('sha256').update(MCP_URL).digest('hex').slice(0, 16);
 const TOKEN_PATH = join(homedir(), '.config', 'vibeagent', `${key}.json`);
 

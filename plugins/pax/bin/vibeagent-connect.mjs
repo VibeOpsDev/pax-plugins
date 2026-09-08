@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
-const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
+const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent.vercel.app/api/local-ai/mcp';
 
 // 배포 시 서버가 치환하는 값(치환 전 = 로컬 개발 복사본).
 // 버전은 형식 검사로, org 는 GitHub org 정규식으로 걸러진다 — placeholder 문자열과 직접 비교하면
