@@ -120,7 +120,7 @@ pable studio에 등록된 식별자이고 **지어내는 값이 아니다.** JWT
 
 1. **PAX 웹 작업공간의 `.env.local`에서 복사** ← **먼저 이걸 안내한다.**
    - PAX 웹에서 이 프로젝트를 열면 파일 목록에 `.env.local`이 있고, 거기 `SSO_SECRET`이 그대로 보인다(편집자 이상 + GitHub 쓰기 권한).
-   - **pable studio 확인 횟수를 소모하지 않는다.** 이미 `claim_portal_sso_key`로 배선된 프로젝트면 항상 이 경로가 가능하다.
+   - **pable studio 확인 횟수를 소모하지 않는다.** 이미 `claim_portal_sso_key`로 배선했거나 `set_vercel_env`로 넣은 프로젝트면 항상 이 경로가 가능하다(둘 다 설정값 저장소에 기록한다).
 2. **pable studio "확인하기"** (1이 안 될 때만)
    - `{PORTAL_URL}/dashboard/dev` → 내 서비스 카드 → **"확인하기"**(모달 "SSO 서명 키 확인").
    - ⚠️ **누적 5회 한도**이고 시간이 지나도 복구되지 않는다. 소진되면 재발급(회전)뿐인데 **회전하면 배포된 앱 로그인이 즉시 끊긴다.**
@@ -135,13 +135,13 @@ pable studio에 등록된 식별자이고 **지어내는 값이 아니다.** JWT
 
 - **배포 SSO** (실제 서비스에서 동작): MCP `set_vercel_env`로 올린다.
   - `set_vercel_env` `SSO_SECRET` = <사용자가 준 값> / `PORTAL_URL` = <`get_portal_registration` 응답의 `portalUrl` 값 — 사용자에게 묻지 않는다> / (선택) `ALLOWED_TENANT_IDS`.
-  - 그 다음 `request_vercel_deploy`로 재배포해야 반영된다. 값은 서버→Vercel 런타임 전용이라 로컬 `.env`엔 안 들어간다. **채팅에 값 재출력 금지.**
+  - 그 다음 `request_vercel_deploy`로 재배포해야 반영된다. 값은 프로젝트 설정값 저장소와 배포(Vercel) 환경 양쪽에 저장되지만, **사용자 PC 의 `.env.development.local`엔 안 들어간다**(로컬 왕복 테스트는 아래 '로컬 SSO' 항목대로 따로 넣는다). **채팅에 값 재출력 금지.**
 - **로컬 SSO** (로컬에서 실제 pable studio 왕복 테스트): 사용자가 준 키 값을 받아 **AI가 `.env.development.local`에 `SSO_SECRET`을 직접 추가**한다(사용자는 값만 제공, 편집기 직접 열 필요 없음). `PORTAL_URL`(= `get_portal_registration` 응답의 `portalUrl` — 사용자에게 묻지 않는다)·(선택)`ALLOWED_TENANT_IDS`도 같이. **값은 채팅에 다시 출력하지 말고**(secret-safety), 이후엔 키 존재만 확인.
 - **로컬 mock** (키 없이 즉시 확인): `.env.development.local`에 `DEV_BYPASS_SSO=true` (+ 선택 `DEV_BYPASS_SCENARIO`). 실제 키 없이 로그인·등급 왕복.
 
 - **(선택) `SSO_SERVICE_ID`** — 승인 시 확정 ID 가 희망 ID 와 달라졌을 때만. 배포는 `set_vercel_env` + `request_vercel_deploy`, 로컬은 `.env.development.local` 에 추가. 코드의 `SERVICE_ID` 리터럴을 고칠 필요 없다.
 
-> `set_vercel_env`는 Vercel 런타임에만 반영되고 로컬 `.env`엔 안 들어간다 — 배포와 로컬은 독립. 자세한 secret 취급은 `pax-secret-safety`, 인프라 도구는 `pax-infra-ops` 스킬 참조.
+> `set_vercel_env`는 프로젝트 설정값 저장소와 배포(Vercel) 환경 양쪽에 저장하지만 **사용자 PC 의 `.env.development.local`엔 안 들어간다** — 로컬은 따로 넣어야 한다(PAX 웹 [코드] 탭의 `.env.local`에서 복사하는 것이 가장 빠르다). 자세한 secret 취급은 `pax-secret-safety`, 인프라 도구는 `pax-infra-ops` 스킬 참조.
 
 ## 코어 코드
 

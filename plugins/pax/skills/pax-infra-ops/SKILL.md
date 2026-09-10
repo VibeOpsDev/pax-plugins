@@ -1,6 +1,6 @@
 ---
 name: pax-infra-ops
-description: Supabase/Vercel/포탈 등록 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. "테이블 추가", "스키마 확인", "RLS 확인", "배포해줘", "환경변수 등록/확인", "배포 왜 실패했어", "PR 게이트 상태", "스토리지 버킷", "service_role 키", "서비스 등록", "SSO 키 신청" 등 인프라 작업에 사용.
+description: Supabase/Vercel/pable studio 등록 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. "테이블 추가", "스키마 확인", "RLS 확인", "배포해줘", "환경변수 등록/확인", "배포 왜 실패했어", "PR 게이트 상태", "스토리지 버킷", "service_role 키", "서비스 등록", "SSO 키 신청" 등 인프라 작업에 사용.
 ---
 # 인프라 작업은 PAX MCP로 (secretless)
 
@@ -10,18 +10,18 @@ description: Supabase/Vercel/포탈 등록 조회·생성·배포·환경변수�
 - 연결 상태: `status` / 공개 env: `get_public_env`
 - 스키마: `get_supabase_schema` / RLS(로컬에서 데이터 안 보일 때 진단): `get_rls_status` / 마이그레이션: `get_migrations`
 - 스토리지 버킷 목록: `list_storage_buckets`
-- 포탈 서비스 등록 상태·서비스 ID: `get_portal_registration`
+- pable studio 서비스 등록 상태·서비스 ID: `get_portal_registration`
 - Vercel 배포 상태: `get_vercel_status` / 배포 실패 로그: `get_deploy_logs`
-- Vercel 환경변수 **키 이름** 목록: `list_vercel_env` (보안상 값은 못 봅니다 — 키 이름만)
+- 환경변수 **키 이름** 목록: `list_vercel_env` (보안상 값은 못 봅니다 — 키 이름만. **배포(Vercel) 환경 쪽만 보여줍니다** — 설정값 저장소 목록은 PAX 웹 [코드] 탭의 `.env.local`에서 확인)
 - PR 게이트 상태: `get_pr_gate_status`
 
 ## 생성·변경 (편집자/소유자 역할 + GitHub 쓰기 권한 필요)
 - 테이블/컬럼 생성: `apply_supabase_change` — **생성만(DROP/DELETE 불가)**
 - 스토리지 버킷 생성: `create_storage_bucket`
-- Vercel 환경변수 설정: `set_vercel_env` / 삭제: `unset_vercel_env`
+- 환경변수(설정값) 설정: `set_vercel_env` / 삭제: `unset_vercel_env` — 설정값 저장소 + 배포 환경 **양쪽**(아래 '환경변수 변경 주의')
 - production 재배포: `request_vercel_deploy`
-- 포탈(pable studio) 서비스 등록: `register_portal_service` — **`confirmedNew` 필요**(사용자가 포탈에서 직접 등록해 둔 경우 중복 등록이 되므로 먼저 확인)
-- 포탈 SSO 키 신청: `request_portal_sso_key` — 연동 켜기가 **비가역**이라 `enableConfirmed` 필요 / 승인 후 수령·배선: `claim_portal_sso_key` — **수령 누적 5회 한도**, 재시도 루프 금지
+- pable studio 서비스 등록: `register_portal_service` — **`confirmedNew` 필요**(사용자가 pable studio에서 직접 등록해 둔 경우 중복 등록이 되므로 먼저 확인)
+- pable studio SSO 키 신청: `request_portal_sso_key` — 연동 켜기가 **비가역**이라 `enableConfirmed` 필요 / 승인 후 수령·배선: `claim_portal_sso_key` — **수령 누적 5회 한도**, 재시도 루프 금지
   - 자세한 순서·주의는 `pax-sso` 스킬을 따르세요(로그인 연동 전반).
 
 파괴적 작업(테이블 삭제 등)은 도구로 제공되지 않으며 PAX 웹에서 승인이 필요합니다. 권한 거부(403)면 사용자의 역할/GitHub 권한을 확인하도록 안내하세요(거부 시 연결이 자동 취소될 수 있음 — 연결 코드로 재연결).
@@ -37,11 +37,11 @@ description: Supabase/Vercel/포탈 등록 조회·생성·배포·환경변수�
 
 ## 환경변수 변경 주의 (set_vercel_env / unset_vercel_env)
 - **기존 키를 덮어쓰기 전 반드시 사용자에게 확인**하세요. 잘못 덮으면 앱이 깨지고 되돌리기 어렵습니다.
-- **배포 라우팅 키**(`VERCEL_PROJECT_ID`·`SUPABASE_PROJECT_REF` 등)는 서버가 차단합니다 — 정상 동작입니다.
-- `set_vercel_env`는 **Vercel 런타임에만** 반영됩니다. 소스 `.env`(=`get_public_env`가 보는 원본)에는 들어가지 않습니다.
-- 로컬에서도 그 값으로 테스트하려면 `.env.development.local`에 **직접 추가**해야 합니다(set_vercel_env는 배포된 앱에만 반영 — 로컬엔 안 들어감). 시크릿 취급은 secret-safety 규칙을 따르세요.
-- env를 바꾼 뒤에는 **`request_vercel_deploy`로 재배포해야 실제로 적용**됩니다.
-- 잘못 넣은 키는 `unset_vercel_env`로 지웁니다.
+- **배포 라우팅 키**(`VERCEL_PROJECT_ID`·`SUPABASE_PROJECT_REF`·DB 접속 좌표 등)는 서버가 차단합니다 — 정상 동작입니다.
+- `set_vercel_env`는 값을 **두 곳에 함께** 저장합니다 — 이 프로젝트의 **설정값 저장소**(PAX 웹 [코드] 탭의 `.env.local`, 편집 권한자에게 보임)와 **배포(Vercel) 환경**. `unset_vercel_env`도 두 곳에서 **함께** 지웁니다.
+- **사용자 PC 의 로컬 파일(`.env.development.local`)에는 들어가지 않습니다.** 로컬에서도 같은 값으로 테스트하려면 **PAX 웹 [코드] 탭의 `.env.local`에서 값을 복사해 `.env.development.local`에 직접 추가**해야 합니다(사용자에게 안내하거나, 사용자가 값을 주면 AI가 파일에 씁니다). 시크릿 취급은 secret-safety 규칙을 따르세요.
+- env를 바꾼 뒤에는 **`request_vercel_deploy`로 재배포해야 배포된 앱에 실제로 적용**됩니다(저장은 즉시, 적용은 재배포 후).
+- 잘못 넣은 키는 `unset_vercel_env`로 지웁니다. 단 **프로젝트 좌표·DB 자격증명·로그인 연동 키**(`SSO_SECRET`·`PORTAL_URL`·`SUPABASE_SERVICE_ROLE_KEY` 등)는 서버가 삭제를 거절합니다 — 설정값 저장소가 유일한 사본이어서 지우면 되돌릴 수 없기 때문입니다. 값을 바꾸려면 `set_vercel_env`로 덮어쓰세요.
 - 민감한 값(API 키·`SERVICE_ROLE` 등)을 **채팅에 붙여넣는 것 자체가 노출**입니다. 꼭 필요할 때만 사용자가 직접 값을 제공하게 하고, 등록 뒤 그 값을 화면에 다시 출력하지 마세요. (등록은 `set_vercel_env`로 값을 *올리는* 정상 흐름이고, 값을 *보여주는* 것은 별개의 위험입니다.)
 
 ## 사용자에게 노출 가능한 정보 (중요)
