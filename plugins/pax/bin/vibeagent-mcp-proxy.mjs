@@ -4,39 +4,52 @@
  *
  * Claude Code 가 이 프로세스를 띄우면, initialize·tools/list 는 **로컬에서 즉시 응답**해
  * 도구가 네이티브로 뜨게 하고(인증 불필요), tools/call 만 **원격 /api/local-ai/mcp 로
- * 토큰을 붙여 전달**한다. 토큰은 /pax:connect 가 저장한 로컬 파일에서 매 호출 읽는다.
+ * 토큰을 붙여 전달**한다. 토큰은 /pax-preview:connect 가 저장한 로컬 파일에서 매 호출 읽는다 — 2.0.0 부터 **프로젝트별 파일**
+ * (`lib/store.mjs selectToken`: 폴더 remote 가 GitHub 면 그 키만, 아니면 최근 연결·구 단일 파일 순. 구 파일은 첫 `status` 로 repoUrl 을
+ * 학습해 폴더 remote 와 일치하면 프로젝트 파일로 승격, 불일치면 거부).
  *
  * 왜 이 방식인가: 원격 HTTP MCP + headersHelper 는 Claude Code 이슈 #41690 으로 토큰 주입이
  * silent no-op → 네이티브 도구가 안 뜬다. stdio 프록시는 그 한계를 우회한다(stdio 는 안정 지원).
  *
  * ⚠️ TOOLS 카탈로그는 src/lib/localAi/mcpServer.ts 와 **수동 동기화** 대상(도구 추가/변경 시 갱신).
  */
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { selectToken, promoteLegacy, repoUrlToSlug } from './lib/store.mjs';
+import { postJsonRpc, PLUGIN_ID } from './lib/rpc.mjs';
+import { isInsideDir } from './lib/gitRemote.mjs';
+
+if (process.argv.includes('--print-proxy-path')) {
+  process.stdout.write(`${fileURLToPath(import.meta.url)}\n`);
+  process.exit(0);
+}
 
 // stdio 모드엔 CLAUDE_CODE_MCP_SERVER_URL 이 없으므로 빌드 시 치환된 URL 을 사용.
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const key = createHash('sha256').update(MCP_URL).digest('hex').slice(0, 16);
-const TOKEN_PATH = join(homedir(), '.config', 'vibeagent', `${key}.json`);
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** Codex 는 플러그인 루트를 cwd 로 띄운다 — 마켓플레이스 clone 의 remote(`<org>/pax-plugins`)로 토큰이 핀되지 않게 그 안이면 cwd 를 무시(최근 연결 경로). */
+const cwdForToken = () => (isInsideDir(process.cwd(), PLUGIN_ROOT) ? null : process.cwd());
 
 const PROTOCOL_VERSION = '2025-06-18';
 // version 은 마켓플레이스 배포 시 아래 placeholder 가 실제 버전으로 치환됨(단일 소스: src/lib/pluginVersion.ts).
-const SERVER_INFO = { name: 'pax-local-ai', version: '1.1.2' };
+const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.0.0' };
 // 서버가 "이 사용자가 구버전인가"를 알 수 있는 유일한 신호. 서버는 **헤더 부재 = 기능 도입 이전 버전**으로
 // 판정하므로 값이 이상해도 보내는 것 자체는 유지한다(baked 상수라 실패할 수 없다).
 // 비-ASCII/제어문자가 섞이면 fetch 가 TypeError 를 던져 **전 도구 호출이 실패**하므로 필터는 필수.
-const PLUGIN_VERSION_HEADER = 'X-Pax-Plugin-Version';
 const PLUGIN_VERSION_VALUE = String(SERVER_INFO.version).replace(/[^\x20-\x7E]/g, '').slice(0, 32);
+// 인스턴스 접미사(`PAX_PLUGIN_ID` — 발행 시 rpc.mjs 에 치환)가 있으면 도구 설명 앞에 `PAX(<id>) · ` 를 붙여 여러 PAX 서버의
+// 플러그인이 한 PC 에 있을 때 모델이 어느 서버 도구인지 구분하게 한다(설명은 서버와 수동 동기화 대상인 TOOLS 원문에 손대지 않고
+// tools/list 응답에서만 붙인다). 원본 정체성은 빈 접두 = 오늘과 동일.
+const TOOL_LABEL = PLUGIN_ID ? `PAX(${PLUGIN_ID}) · ` : '';
 
 const NOARGS = { type: 'object', properties: {} };
 const TOOLS = [
   { name: 'status', description: '현재 브리지 연결의 프로젝트·스코프·인프라 준비 상태를 반환합니다.', inputSchema: NOARGS },
-  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값(Supabase URL·anon key)만 반환합니다. secret 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
+  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값만 반환합니다 — publicKeys(앱 공개 설정값: NEXT_PUBLIC_*/VITE_*·PORTAL_URL·SSO_SERVICE_ID, Supabase 연결 여부와 무관) + Supabase URL·anon key(ready 일 때). service_role·SSO_SECRET 등 비밀 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
   { name: 'get_service_role_key', description: '로컬 .env.development.local 용 SUPABASE_SERVICE_ROLE_KEY 를 반환합니다(편집자/소유자 + GitHub 쓰기 권한 필요). 받은 값은 파일에만 기록 — 채팅 출력·커밋 금지.', inputSchema: NOARGS },
   { name: 'get_project_manifest', description: 'clone/로컬 실행에 필요한 repo·브랜치·배포주소(*.vercel.app) 정보를 반환합니다.', inputSchema: NOARGS },
+  { name: 'get_project_skills', description: '이 프로젝트 폴더에 놓을 회사·개인 스킬 번들을 반환합니다(read-only). 직접 호출하지 말고 bin/vibeagent-sync-skills.mjs 가 clone 폴더의 .claude/skills/pax-* 에 씁니다.', inputSchema: NOARGS },
   { name: 'get_supabase_schema', description: 'public 스키마의 테이블·컬럼 구조를 반환합니다(read-only).', inputSchema: NOARGS },
   { name: 'get_rls_status', description: '테이블별 RLS 활성 여부와 정책 목록을 반환합니다(read-only).', inputSchema: NOARGS },
   { name: 'get_migrations', description: '적용된 Supabase 마이그레이션 버전 목록을 반환합니다(read-only).', inputSchema: NOARGS },
@@ -205,17 +218,42 @@ const TOOLS = [
       },
     },
   },
+  { name: 'disconnect', description: '이 프로젝트의 PAX 연결(현재 토큰)을 즉시 취소합니다. /pax-preview:disconnect 가 먼저 이 도구를 호출해 서버에서 취소한 뒤 로컬 토큰 파일을 지웁니다. 다시 쓰려면 /pax-preview:connect.', inputSchema: NOARGS },
 ];
 
-function readToken() {
-  try {
-    const { token, expiresAt } = JSON.parse(readFileSync(TOKEN_PATH, 'utf8'));
-    if (!token) return null;
-    if (expiresAt && new Date(expiresAt).getTime() < Date.now()) return null;
-    return token;
-  } catch {
-    return null;
+/** 토큰 선택 — { token, sel } | { token:null, message }. 레거시 단일 파일은 폴더 remote 와 대조 후 승격. */
+let legacyMismatch = false; // 서버가 200 으로 돌려준 repoUrl 이 폴더 remote 와 **확인된** 불일치일 때만 잠근다(네트워크 오류·타임아웃은 다음 호출에 재시도).
+async function readToken() {
+  const sel = selectToken({ mcpUrl: MCP_URL, cwd: cwdForToken(), projectDirHint: process.env.CLAUDE_PROJECT_DIR });
+  if (sel.kind === 'project' || sel.kind === 'folder' || sel.kind === 'recent') return { token: sel.entry.token, sel };
+  if (sel.kind === 'legacy') {
+    // 구 파일은 repoUrl 을 모른다 — 첫 호출 때 status 로 학습해 폴더 remote 와 대조(remote 없으면 최근 연결로 그대로 사용).
+    if (!sel.remote) return { token: sel.entry.token, sel };
+    const mismatch = `지금 폴더(${sel.remote})는 이전 연결과 다른 프로젝트예요. /pax-preview:connect 로 이 프로젝트를 연결하세요.`;
+    if (legacyMismatch) return { token: null, message: mismatch };
+    try {
+      const { status, data } = await postJsonRpc(MCP_URL, sel.entry.token, { jsonrpc: '2.0', id: 'legacy-status', method: 'tools/call', params: { name: 'status', arguments: {} } }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 15_000 });
+      if (status === 401) return { token: null, message: 'PAX 인증이 만료/취소되었습니다. /pax-preview:connect 를 실행해 다시 연결하세요.' };
+      const repoUrl = status === 200 ? data?.result?.structuredContent?.repoUrl : null;
+      if (typeof repoUrl === 'string') {
+        if (repoUrlToSlug(repoUrl) === sel.remote) {
+          promoteLegacy(MCP_URL, sel.entry, repoUrl);
+          return { token: sel.entry.token, sel };
+        }
+        legacyMismatch = true;
+        return { token: null, message: mismatch };
+      }
+    } catch { /* 아래 안내 — 잠그지 않는다 */ }
+    return { token: null, message: '이전 연결(구 버전 토큰)이 어느 프로젝트 것인지 서버에서 확인하지 못했어요. 잠시 후 다시 시도하거나 /pax-preview:connect 로 이 프로젝트를 연결하세요.' };
   }
+  // remote 없는 폴더는 이 폴더에서 연결한 프로젝트(폴더 바인딩)만 쓴다 — 다른 세션·폴더의 최근 연결로 새지 않는다.
+  if (sel.reason === 'no_folder_binding') {
+    return { token: null, message: '이 폴더는 아직 PAX 에 연결되지 않았어요. /pax-preview:connect 를 실행해 이 폴더에서 쓸 프로젝트를 고르세요(다른 폴더에서 한 연결은 여기에 쓰이지 않아요).' };
+  }
+  const where = sel.remote ? `이 프로젝트(${sel.remote})` : sel.slug ? `이 폴더에 연결된 프로젝트(${sel.slug})` : 'PAX';
+  return { token: null, message: sel.reason === 'expired'
+    ? `${where} 연결이 만료됐어요. /pax-preview:connect 를 실행해 다시 연결하세요.`
+    : `${where}에 연결되어 있지 않아요. /pax-preview:connect 를 실행해 연결하세요.` };
 }
 
 function send(msg) {
@@ -231,32 +269,12 @@ function errorResult(id, text) {
 }
 
 async function forwardToolCall(id, params) {
-  const token = readToken();
-  if (!token) {
-    return errorResult(id, 'PAX 에 연결되어 있지 않거나 연결이 만료되었습니다. PAX 연결 코드로 먼저 연결하세요.');
-  }
+  const { token, message } = await readToken();
+  if (!token) return errorResult(id, message);
   try {
-    const res = await fetch(MCP_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        [PLUGIN_VERSION_HEADER]: PLUGIN_VERSION_VALUE,
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params }),
-    });
-    if (res.status === 401) {
-      return errorResult(id, 'PAX 인증이 만료/취소되었습니다. PAX 연결 코드로 다시 연결하세요.');
-    }
-    const text = await res.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      // enableJsonResponse=true 라 보통 JSON 이지만, SSE 형식이면 data: 라인에서 추출(방어적).
-      const m = text.match(/data:\s*(\{[\s\S]*\})\s*$/m);
-      data = m ? JSON.parse(m[1]) : null;
+    const { status, data } = await postJsonRpc(MCP_URL, token, { jsonrpc: '2.0', id, method: 'tools/call', params }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 120_000 });
+    if (status === 401) {
+      return errorResult(id, 'PAX 인증이 만료/취소되었습니다. /pax-preview:connect 를 실행해 다시 연결하세요.');
     }
     if (data && data.result) return send({ jsonrpc: '2.0', id, result: data.result });
     // JSON-RPC error 는 {code:number, message} 형태일 때만 그대로 전달 — 비-JSON-RPC 본문(503/400 등)은 도구 에러로 (review #7)
@@ -265,7 +283,7 @@ async function forwardToolCall(id, params) {
     }
     return errorResult(
       id,
-      `PAX 서버 오류 (HTTP ${res.status}).${res.status === 503 ? ' 서비스 일시 중지 — 잠시 후 다시 시도하세요.' : ''}`,
+      `PAX 서버 오류 (HTTP ${status}).${status === 503 ? ' 서비스 일시 중지 — 잠시 후 다시 시도하세요.' : ''}`,
     );
   } catch (e) {
     return errorResult(id, `PAX 서버 호출 실패: ${e?.message ?? e}`);
@@ -305,7 +323,7 @@ rl.on('line', (line) => {
         },
       });
     case 'tools/list':
-      return send({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
+      return send({ jsonrpc: '2.0', id, result: { tools: TOOL_LABEL ? TOOLS.map((t) => ({ ...t, description: TOOL_LABEL + t.description })) : TOOLS } });
     case 'tools/call':
       return void forwardToolCall(id, params);
     case 'ping':

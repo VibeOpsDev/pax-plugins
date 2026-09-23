@@ -1,8 +1,12 @@
 {
   "mcpServers": {
-    "pable-pax": {
+    "pable-pax-preview": {
+      "type": "stdio",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/bin/vibeagent-mcp-proxy.mjs"]
+      "args": [
+        "bin/vibeagent-mcp-proxy.mjs"
+      ],
+      "cwd": "./"
     }
   }
 }

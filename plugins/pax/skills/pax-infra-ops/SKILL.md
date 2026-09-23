@@ -1,6 +1,6 @@
 ---
 name: pax-infra-ops
-description: Supabase/Vercel/pable studio 등록 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. "테이블 추가", "스키마 확인", "RLS 확인", "배포해줘", "환경변수 등록/확인", "배포 왜 실패했어", "PR 게이트 상태", "스토리지 버킷", "service_role 키", "서비스 등록", "SSO 키 신청" 등 인프라 작업에 사용.
+description: "PAX(preview) · Supabase/Vercel/pable studio 등록 조회·생성·배포·환경변수·스토리지·배포로그·PR게이트는 PAX MCP로 서버 대행. \"테이블 추가\", \"스키마 확인\", \"RLS 확인\", \"배포해줘\", \"환경변수 등록/확인\", \"배포 왜 실패했어\", \"PR 게이트 상태\", \"스토리지 버킷\", \"service_role 키\", \"서비스 등록\", \"SSO 키 신청\" 등 인프라 작업에 사용."
 ---
 # 인프라 작업은 PAX MCP로 (secretless)
 
@@ -24,7 +24,7 @@ description: Supabase/Vercel/pable studio 등록 조회·생성·배포·환경�
 - pable studio SSO 키 신청: `request_portal_sso_key` — 연동 켜기가 **비가역**이라 `enableConfirmed` 필요 / 승인 후 수령·배선: `claim_portal_sso_key` — **수령 누적 5회 한도**, 재시도 루프 금지
   - 자세한 순서·주의는 `pax-sso` 스킬을 따르세요(로그인 연동 전반).
 
-파괴적 작업(테이블 삭제 등)은 도구로 제공되지 않으며 PAX 웹에서 승인이 필요합니다. 권한 거부(403)면 사용자의 역할/GitHub 권한을 확인하도록 안내하세요(거부 시 연결이 자동 취소될 수 있음 — 연결 코드로 재연결).
+파괴적 작업(테이블 삭제 등)은 도구로 제공되지 않으며 PAX 웹에서 승인이 필요합니다. 권한 거부(403)면 사용자의 역할/GitHub 권한을 확인하도록 안내하세요(거부 시 연결이 자동 취소될 수 있음 — `/pax-preview:connect` 로 재연결).
 
 ## 민감 — 값 수령 (편집자/소유자 + GitHub 쓰기 권한)
 - service_role 키 다운로드: `get_service_role_key` — 로컬 `.env.development.local` 전용 (skill: pax-local-setup 의 '환경변수' 단계). 값 채팅 출력·커밋 금지(secret-safety 규칙).
