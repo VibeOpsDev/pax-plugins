@@ -1,7 +1,8 @@
 /**
  * 토큰 파일 저장소 — 프록시·연결·동기화 공용 (2.0.0).
  *
- * 레이아웃: `~/.config/vibeagent/<instanceKey>/<owner--name>.json`(프로젝트별) + `recent.json`(최근 연결) + `pending-*.json`(연결 진행 상태).
+ * 레이아웃: `~/.config/vibeagent/<instanceKey>/<owner--name>.json`(프로젝트별) + `recent.json`(최근 연결) + `pending-*.json`(연결 진행 상태)
+ *   + `deployment-bypass.json`(프리뷰 인스턴스의 배포 보호 우회 값 — 서버가 연결 시 준 것, origin 고정).
  * instanceKey = sha256(MCP URL)[:16](1.x 와 동일 — 인스턴스 구분). 구 1.x 단일 파일 `~/.config/vibeagent/<instanceKey>.json` 은
  * **승격** 대상(JWT payload 무검증 디코드로 jti·repo_url_hash 만 얻고, 프록시가 첫 `status` 로 repoUrl 을 학습해 이관).
  *
@@ -110,6 +111,38 @@ export function writeProjectToken(mcpUrl, data) {
 }
 export function deleteProjectToken(mcpUrl, slug) {
   try { unlinkSync(projectTokenPath(mcpUrl, slug)); return true; } catch { return false; }
+}
+
+// ─── 배포 보호 우회 값(프리뷰 인스턴스, 2026-09-23) ──────────────────────────────
+/**
+ * `<instanceDir>/deployment-bypass.json` = { origin, secret, savedAt } — Vercel 배포 보호(Vercel Authentication)를 넘기 위한 값.
+ * 서버 env `LOCAL_AI_DEPLOYMENT_BYPASS_SECRET` 을 연결 페이지가 코드 발급 응답으로 받아 리스너에 폼 POST 로 넘기고, 리스너가 여기 적는다.
+ * origin 은 **이 MCP 주소의 origin** 으로 고정 저장하고 읽을 때 다시 대조한다(다른 호스트로 새지 않게 — rpc.mjs 가 요청 대상과도 대조).
+ * 값은 로그·출력·상태 파일 어디에도 넣지 않는다. 파일이 없으면 종전과 같은 동작(헤더 없음).
+ */
+const BYPASS_SECRET_RE = /^[\x21-\x7E]{1,128}$/;
+export function isValidBypassSecret(v) {
+  return typeof v === 'string' && BYPASS_SECRET_RE.test(v);
+}
+export function deploymentBypassPath(mcpUrl) {
+  return join(instanceDir(mcpUrl), 'deployment-bypass.json');
+}
+function originOf(url) {
+  try { return new URL(url).origin; } catch { return null; }
+}
+export function readDeploymentBypass(mcpUrl) {
+  const origin = originOf(mcpUrl);
+  const j = readJson(deploymentBypassPath(mcpUrl));
+  if (!origin || !j || j.origin !== origin || !isValidBypassSecret(j.secret)) return null;
+  return { origin, secret: j.secret };
+}
+export function writeDeploymentBypass(mcpUrl, secret) {
+  const origin = originOf(mcpUrl);
+  if (!origin || !isValidBypassSecret(secret)) throw new Error('bypass 값 형식 위반');
+  writeJsonAtomic(deploymentBypassPath(mcpUrl), { origin, secret, savedAt: new Date().toISOString() });
+}
+export function deleteDeploymentBypass(mcpUrl) {
+  try { unlinkSync(deploymentBypassPath(mcpUrl)); return true; } catch { return false; }
 }
 /** 최근 연결 — slug 가 형식에 안 맞으면(손상·수동 편집) 없는 것으로 본다. */
 export function readRecent(mcpUrl) {

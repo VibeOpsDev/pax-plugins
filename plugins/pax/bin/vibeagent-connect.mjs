@@ -19,7 +19,7 @@ import { platform, release } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { instanceDir, readJson, readProjectToken, readRecent, readLegacy, listProjectTokens, repoUrlToSlug, isUsable, isValidRepoSlug, selectToken, deleteProjectToken, readFolderBinding, writeFolderBinding, deleteFolderBinding } from './lib/store.mjs';
+import { instanceDir, readJson, readProjectToken, readRecent, readLegacy, listProjectTokens, repoUrlToSlug, isUsable, isValidRepoSlug, selectToken, deleteProjectToken, readFolderBinding, writeFolderBinding, deleteFolderBinding, deleteDeploymentBypass } from './lib/store.mjs';
 import { detectGithubRemote, isInsideDir } from './lib/gitRemote.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
@@ -56,6 +56,8 @@ if (process.argv.includes('--disconnect')) {
   } else {
     process.stdout.write('이 폴더에 연결된 프로젝트 토큰이 없어요.\n');
   }
+  // 이 인스턴스에 남은 연결이 없으면 배포 보호 우회 값(프리뷰)도 지운다 — 다음 연결이 서버에서 다시 받는다.
+  if (listProjectTokens(MCP_URL).length === 0) deleteDeploymentBypass(MCP_URL);
   process.exit(0);
 }
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));

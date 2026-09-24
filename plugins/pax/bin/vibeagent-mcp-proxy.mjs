@@ -17,7 +17,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { selectToken, promoteLegacy, repoUrlToSlug } from './lib/store.mjs';
-import { postJsonRpc, PLUGIN_ID } from './lib/rpc.mjs';
+import { postJsonRpc, PLUGIN_ID, isDeploymentProtected, DEPLOYMENT_PROTECTED_MESSAGE } from './lib/rpc.mjs';
 import { isInsideDir } from './lib/gitRemote.mjs';
 
 if (process.argv.includes('--print-proxy-path')) {
@@ -233,6 +233,7 @@ async function readToken() {
     if (legacyMismatch) return { token: null, message: mismatch };
     try {
       const { status, data } = await postJsonRpc(MCP_URL, sel.entry.token, { jsonrpc: '2.0', id: 'legacy-status', method: 'tools/call', params: { name: 'status', arguments: {} } }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 15_000 });
+      if (isDeploymentProtected(status, data)) return { token: null, message: DEPLOYMENT_PROTECTED_MESSAGE };
       if (status === 401) return { token: null, message: 'PAX 인증이 만료/취소되었습니다. /pax-preview:connect 를 실행해 다시 연결하세요.' };
       const repoUrl = status === 200 ? data?.result?.structuredContent?.repoUrl : null;
       if (typeof repoUrl === 'string') {
@@ -274,7 +275,8 @@ async function forwardToolCall(id, params) {
   try {
     const { status, data } = await postJsonRpc(MCP_URL, token, { jsonrpc: '2.0', id, method: 'tools/call', params }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 120_000 });
     if (status === 401) {
-      return errorResult(id, 'PAX 인증이 만료/취소되었습니다. /pax-preview:connect 를 실행해 다시 연결하세요.');
+      // 배포 보호(Vercel Authentication)의 엣지 401 은 앱의 인증 만료와 원인이 다르다 — 재연결로 우회 값을 받게 안내.
+      return errorResult(id, isDeploymentProtected(status, data) ? DEPLOYMENT_PROTECTED_MESSAGE : 'PAX 인증이 만료/취소되었습니다. /pax-preview:connect 를 실행해 다시 연결하세요.');
     }
     if (data && data.result) return send({ jsonrpc: '2.0', id, result: data.result });
     // JSON-RPC error 는 {code:number, message} 형태일 때만 그대로 전달 — 비-JSON-RPC 본문(503/400 등)은 도구 에러로 (review #7)

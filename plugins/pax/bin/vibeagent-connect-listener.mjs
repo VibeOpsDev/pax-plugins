@@ -6,20 +6,25 @@
  * `--spawn` 이 `--serve` 를 detached 로 띄우고 즉시 exit(리스너 ppid → launchd/init 재부모화). `--serve` 는 중간 프로세스의
  * stdout/stderr(= connect 가 연 `listener-<nonce8>.log`)를 그대로 물려받아 import 오류·크래시가 로그에 남는다.
  *
- * `--serve`: 127.0.0.1 임의 포트에 `GET /connect?code&nonce` 하나만 받는다. Host 가 `127.0.0.1:<port>` 인지·nonce timingSafeEqual —
- * 불일치는 404 로 답하고 **계속 대기**, 유효 요청 1회만. 수신 → 교환 POST(코드만 — 신원 증명은 PAX 로그인 쪽) → 토큰 파일 저장 →
- * 상태 `done` → 그 뒤에 응답. 응답은 쿼리·헤더를 렌더하지 않는 정적 HTML(no-store·nosniff·외부 자원 없음).
+ * `--serve`: 127.0.0.1 임의 포트에 `GET /connect?code&nonce` 또는 `POST /connect`(urlencoded `code`·`nonce`·`bypass`, 8KB 캡) 하나만
+ * 받는다. POST 는 서버가 배포 보호 우회 값(`deploymentBypass`)을 준 프리뷰 인스턴스에서 연결 페이지가 숨은 폼으로 보내는 경로 —
+ * 우회 값은 **POST 로만** 받고(주소창·기록 노출 경로 차단) 인스턴스 폴더 `deployment-bypass.json` 에 0600 으로 적어 교환 요청과
+ * 이후 MCP 호출(rpc.mjs)이 `x-vercel-protection-bypass` 로 쓴다. 우회 값 없이(GET) 연결돼도 파일은 **지우지 않는다** — 손으로 넣어 둔 값
+ * (서버 env 없이 시험할 때)이 살아야 하고, 보호가 꺼진 배포엔 헤더가 무시되며, 값이 바뀌면 다음 POST 연결이 덮어쓴다. 삭제는 `/pax-preview:disconnect` 로 남은 연결이 없을 때만.
+ * Host 가 `127.0.0.1:<port>` 인지·nonce timingSafeEqual — 불일치는 404 로 답하고 **계속 대기**, 유효 요청 1회만.
+ * 수신 → 교환 POST(코드만 — 신원 증명은 PAX 로그인 쪽) → 토큰 파일 저장 → 상태 `done` → 그 뒤에 응답.
+ * 응답은 쿼리·헤더·본문을 렌더하지 않는 정적 HTML(no-store·nosniff·외부 자원 없음).
  * 요청 처리 중 예외는 404(교환 전)·500(교환 후) 로 답하고 프로세스는 살려 둔다(비동기 핸들러 거부가 프로세스를 죽이지 않게).
  * 수명 600s(로그인·MFA 왕복 포함) → `failed(timeout)`, SIGTERM → `failed(superseded)`.
  * 상태 파일 `<instanceDir>/pending-<nonce8>.json` 을 전경(`--wait`)이 폴링한다. `--url` 로 받은 연결 주소 템플릿(`{port}` 슬롯)은
- * 포트를 채워 상태 파일 `url` 에 보관 — 전경이 **이어 붙을 때** 다시 보여 준다. 상태 파일에 연결 코드·토큰은 절대 넣지 않는다.
+ * 포트를 채워 상태 파일 `url` 에 보관 — 전경이 **이어 붙을 때** 다시 보여 준다. 상태 파일·로그에 연결 코드·토큰·우회 값은 절대 넣지 않는다.
  */
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { writeJsonAtomic, writeProjectToken, writeFolderBinding } from './lib/store.mjs';
-import { PLUGIN_VERSION_HEADER } from './lib/rpc.mjs';
+import { writeJsonAtomic, writeProjectToken, writeFolderBinding, writeDeploymentBypass, isValidBypassSecret } from './lib/store.mjs';
+import { PLUGIN_VERSION_HEADER, deploymentBypassHeaders, isDeploymentProtected, DEPLOYMENT_PROTECTED_MESSAGE } from './lib/rpc.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
 const PLUGIN_VERSION = '2.0.0';
@@ -113,20 +118,41 @@ function finish() {
   setTimeout(() => { server.close(); process.exit(0); }, 300);
 }
 
+const FORM_BODY_MAX = 8192;
+/** POST 본문(urlencoded) — 8KB 캡, 다른 타입·초과는 null(거절). */
+async function readForm(req) {
+  const type = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+  if (type !== 'application/x-www-form-urlencoded') return null;
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > FORM_BODY_MAX) return null;
+    chunks.push(chunk);
+  }
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+}
+
 let handled = false;
 async function handle(req, res) {
   let url;
   try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); } catch { return deny(res); }
   const expectedHost = `127.0.0.1:${state.port}`;
+  if ((req.method !== 'GET' && req.method !== 'POST') || url.pathname !== '/connect' || req.headers.host !== expectedHost || handled) return deny(res);
+  const params = req.method === 'POST' ? await readForm(req) : url.searchParams;
+  if (!params) return deny(res);
   // 바이트 길이로 먼저 대조 — UTF-16 길이가 같아도 UTF-8 바이트 수가 다르면 timingSafeEqual 이 throw 한다.
-  const nonceIn = Buffer.from(url.searchParams.get('nonce') ?? '', 'utf8');
+  const nonceIn = Buffer.from(params.get('nonce') ?? '', 'utf8');
   const nonceOk = nonceIn.length === nonceBuf.length && timingSafeEqual(nonceIn, nonceBuf);
-  if (req.method !== 'GET' || url.pathname !== '/connect' || req.headers.host !== expectedHost || !nonceOk || handled) return deny(res);
-  const code = url.searchParams.get('code') ?? '';
+  if (!nonceOk || handled) return deny(res);
+  const code = params.get('code') ?? '';
   if (!code || code.length > 256) return deny(res, RETRY_HINT);
+  // 우회 값은 POST 로만(GET 쿼리는 주소창·기록에 남는다). 형식 위반은 없는 것으로.
+  const bypassRaw = req.method === 'POST' ? params.get('bypass') : null;
+  const bypass = isValidBypassSecret(bypassRaw) ? bypassRaw : null;
   handled = true;
   saveState({ status: 'exchanging' });
-  const outcome = await exchange(code);
+  const outcome = await exchange(code, bypass);
   if (outcome.ok) {
     saveState({ status: 'done', result: outcome.result, message: null });
     res.writeHead(200, HEADERS);
@@ -157,15 +183,22 @@ const server = http.createServer((req, res) => {
 });
 
 const backoff = (attempt) => new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
-async function exchange(code) {
+async function exchange(code, bypass = null) {
   const exchangeUrl = MCP_URL.replace(/\/api\/local-ai\/mcp\/?$/, '/api/local-ai/token/exchange');
+  // 우회 값은 교환 전에 적는다(교환이 실패해도 다음 도구 호출·재연결이 쓴다). 저장 실패는 이번 교환을 막지 않는다(메모리 값으로 진행).
+  // 값이 없으면(GET) 기존 파일을 그대로 둔다 — 아래 헤더 조립이 파일을 읽어 쓴다.
+  if (bypass) { try { writeDeploymentBypass(MCP_URL, bypass); } catch { /* 권한 문제 등 — 값은 출력하지 않는다 */ } }
   let lastMessage = '연결 서버 응답이 없어요.';
   for (let attempt = 0; attempt < 3; attempt++) {
     let res, data;
     try {
       res = await fetch(exchangeUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', [PLUGIN_VERSION_HEADER]: PLUGIN_VERSION.replace(/[^\x20-\x7E]/g, '').slice(0, 32) },
+        headers: {
+          'Content-Type': 'application/json',
+          [PLUGIN_VERSION_HEADER]: PLUGIN_VERSION.replace(/[^\x20-\x7E]/g, '').slice(0, 32),
+          ...deploymentBypassHeaders({ mcpUrl: MCP_URL, targetUrl: exchangeUrl, secret: bypass }),
+        },
         body: JSON.stringify({ connectCode: code, ...(previousJti ? { previousJti } : {}) }),
         redirect: 'error', // 코드를 리다이렉트 대상에 다시 POST 하지 않는다
         signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(15_000) : undefined,
@@ -186,6 +219,8 @@ async function exchange(code) {
         return { ok: false, message: `store: 토큰 파일을 저장하지 못했어요(${e?.code ?? e?.message ?? e}). 설정 폴더(~/.config/vibeagent)의 권한을 확인한 뒤 /pax-preview:connect 를 다시 실행하세요.` };
       }
     }
+    // Vercel 배포 보호의 엣지 401 — 앱에 닿지 못했다(우리 응답엔 항상 최상위 `code` 가 있다). 재시도 무의미.
+    if (isDeploymentProtected(res.status, data)) return { ok: false, message: `deployment_protected: ${DEPLOYMENT_PROTECTED_MESSAGE}` };
     const codeName = typeof data.code === 'string' ? data.code : `http_${res.status}`;
     lastMessage = `${codeName}: ${typeof data.error === 'string' ? data.error : `연결 실패 (HTTP ${res.status})`}`;
     // 401/400/429 는 재시도 무의미(코드 소비·만료 등). 503 중 mint_failed 는 코드가 이미 소비돼 재시도가 code_invalid 로 진단을 덮는다.
