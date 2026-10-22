@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * PAX 연결(2.0.0) — 코드 붙여넣기 없음. Claude(명령)·Codex(스킬) 양쪽에서 호출되는 벤더중립 스크립트.
+ * PAX 연결(2.0.x) — 코드 붙여넣기 없음. Claude(명령)·Codex(스킬) 양쪽에서 호출되는 벤더중립 스크립트.
  *
  * 흐름: 진행 상태 파일(`pending-*.json`) 점검 →
  *   · `done`(10분 이내) → 결과 소비(출력·스킬 동기화·파일 삭제) 후 종료 — 리스너 기동 없음
  *   · `waiting`/`exchanging` 이고 exp 미도래 → **이어 붙기**(리스너·브라우저 탭을 새로 열지 않음, 주소·확인값 재출력) → `--wait` 면 폴링
  *   · `failed`·exp 도래·10분 초과 → 파일만 삭제(pid 는 건드리지 않음 — 리스너는 exp 에 스스로 끝나고, pid 는 재사용될 수 있다).
  *     10분 이내 `failed` 는 아무도 기다리지 않을 때 실패한 것이라 사유 한 줄을 먼저 보여 주고 새로 시작한다
- * → 살아있는 대기가 없을 때만 리스너(이중 fork) 기동 → 상태 `waiting` 확인(10s, exit 4) →
+ * → 살아있는 대기가 없을 때만 **연결 전 확인**(2.0.1 — 실행 방식 무관, 새 연결 직전에만. 서버가 재설치 필요로 판정하면 안내 +
+ *   `plugin_reinstall_required:` 줄을 내고 exit 5, 리스너·브라우저·상태 파일 없음. 확인 실패는 전부 그대로 진행 — `lib/rpc.mjs` `connectPreflight`) →
+ * 리스너(이중 fork) 기동 → 상태 `waiting` 확인(10s, exit 4) →
  * `https://<pax>/local-ai/connect#port=;nonce=;exp=[;repo=]` + 확인값 출력 + 브라우저 열기 → **기본은 곧바로 exit 0**(명령이 사용자에게 안내) →
  * 명령이 `--wait 30` 으로 재실행하며 폴링(이어 붙기) → done: 결과 출력 + (폴더 remote == 연결 repo 면) 스킬 동기화 / failed: 안내 /
  * 미완: `waiting` 출력 후 exit 0(다시 `--wait 30`).
@@ -21,8 +23,11 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { instanceDir, readJson, readProjectToken, readRecent, readLegacy, listProjectTokens, repoUrlToSlug, isUsable, isValidRepoSlug, selectToken, deleteProjectToken, readFolderBinding, writeFolderBinding, deleteFolderBinding, deleteDeploymentBypass } from './lib/store.mjs';
 import { detectGithubRemote, isInsideDir } from './lib/gitRemote.mjs';
+import { connectPreflight } from './lib/rpc.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
+/** 배포 시 서버가 치환(미치환 개발본이면 연결 전 확인을 건너뛴다 — `connectPreflight` 가 형식으로 거른다). */
+const PLUGIN_VERSION = '2.1.0';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(HERE, '..');
 /**
@@ -67,6 +72,7 @@ if (positional[0] && /^[A-Za-z0-9_-]{16,}$/.test(positional[0])) {
 // 기본 = 기다리지 않음(주소·확인값을 곧바로 돌려준다). `--wait [초]` 일 때만 폴링. 구 `--no-wait` 는 무해한 no-op.
 const wait = process.argv.includes('--wait');
 const restart = process.argv.includes('--restart');
+
 
 const dir = instanceDir(MCP_URL);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -160,7 +166,20 @@ if (!previousJti) {
   if (isUsable(legacy) && legacy.jti) previousJti = legacy.jti;
 }
 
-// ── 4) 리스너 기동 (이중 fork) ────────────────────────────────────────────────────────────────────────────────
+// ── 4) 연결 전 확인(2.0.1) — **새 연결을 시작하기 직전에만**, 실행 방식(`--wait` 포함)과 무관하게 서버에 묻는다(기준은 서버에만 — 1.x 는
+//     연결 명령이 코드 인자에 묶여 있어 2.0 전환 뒤 서버가 끼어들 방법이 없었다). 끝난 연결의 결과 처리·진행 중 대기 이어 붙기는 위에서 이미
+//     끝났으므로 묻지 않는다 — 이미 받은 토큰의 마무리(스킬 설치)를 막지 않고, 재실행마다 왕복을 치르지도 않는다. 대기가 끝난 뒤의 `--wait`
+//     폴링도 여기로 와서 새 리스너를 띄우므로 반드시 이 자리여야 한다(첫 실행에서만 물으면 그 경로가 빠진다).
+//     stop 이면 리스너·브라우저·상태 파일 없이 끝낸다 — 명령·스킬이 `plugin_reinstall_required:` 줄을 보고 안내만 전달하고 멈춘다.
+{
+  const pre = await connectPreflight(MCP_URL, PLUGIN_VERSION);
+  if (pre.stop) {
+    process.stdout.write(`${pre.guidance}\nplugin_reinstall_required: 이 설치본으로는 연결을 시작하지 않았어요 — 안내대로 재설치한 뒤 다시 연결하세요.\n`);
+    process.exit(5);
+  }
+}
+
+// ── 5) 리스너 기동 (이중 fork) ────────────────────────────────────────────────────────────────────────────────
 let origin;
 try { origin = new URL(MCP_URL).origin; } catch { process.stderr.write('MCP 주소가 올바르지 않아요(로컬 개발 복사본?).\n'); process.exit(1); }
 const nonce = randomBytes(24).toString('base64url'); // 32자
@@ -196,7 +215,7 @@ if (!isConnectUrl(urlTemplate.replace('{port}', '1'))) {
     process.stderr.write(`listener_failed: 연결 대기 프로세스를 시작하지 못했어요${st?.message ? ` (${st.message})` : ''}. 로그: ${logPath}\n`);
     process.exit(4);
   }
-  // ── 5) 연결 주소 출력 + 브라우저 ───────────────────────────────────────────────────────────────────────────
+  // ── 6) 연결 주소 출력 + 브라우저 ───────────────────────────────────────────────────────────────────────────
   const url = typeof st.url === 'string' ? st.url : urlTemplate.replace('{port}', String(st.port));
   if (!isConnectUrl(url)) {
     process.stderr.write('연결 주소 조립에 실패했어요.\n');
@@ -208,7 +227,7 @@ if (!isConnectUrl(urlTemplate.replace('{port}', '1'))) {
   }
 }
 
-// ── 6) 대기 ────────────────────────────────────────────────────────────────────────────────────────────────
+// ── 7) 대기 ────────────────────────────────────────────────────────────────────────────────────────────────
 if (!wait) process.exit(0);
 await waitLoop(statePath);
 

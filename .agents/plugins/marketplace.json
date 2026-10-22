@@ -12,7 +12,7 @@
         "path": "./plugins/pax"
       },
       "description": "PAX(preview) · PAX 클라우드 프로젝트를 로컬(Codex)에서 이어 개발 — clone, 공개 env 설정, Supabase/Vercel 작업은 PAX MCP 대행(secretless).",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "category": "development"
     }
   ]

@@ -29,6 +29,7 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
   node "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/vibeagent-sync-skills.mjs" --project-dir "<clone 폴더>"
   ```
   출력 `[스킬 동기화] 추가 n …` 을 사용자에게 한 줄로 알리세요. 스킬은 `.claude/skills/pax-*`(Claude)·`.agents/skills/pax-*`(Codex) 에 놓이며 `git status` 에 보이지 않습니다(`.git/info/exclude`). `sandbox:` 로 실패하면 "샌드박스를 끄거나 터미널에서 실행" 을 안내하세요. Claude Code 는 새 스킬 폴더를 곧 인식합니다(안 보이면 `/reload-skills`).
+- 이후 관리자가 스킬을 바꾸면 Claude Code 는 **새로 열 때 자동으로** 맞춥니다(연결 후 12시간 안). 바로 받으려면 `/pax-preview:sync-skills`, Codex 는 "스킬 업데이트해줘". `pax-*` 스킬 파일은 **고치지 마세요** — 다음 동기화 때 되돌아갑니다(바꾸려면 회사 스킬은 관리자, 개인 스킬은 PAX 채팅 입력창의 ＋ → 도구 관리 → 내 도구).
 
 ## 4. 환경변수 (.env.development.local)
 - `get_public_env` 도구를 호출하세요. 응답은 두 묶음입니다 — **`publicKeys`**(앱 공개 설정값: `NEXT_PUBLIC_*`/`VITE_*`·`PORTAL_URL`·`SSO_SERVICE_ID`, **Supabase 연결 여부와 무관**)와 **Supabase 공개값**(`supabaseUrl`·`anonKey`, `ready: true` 일 때만).

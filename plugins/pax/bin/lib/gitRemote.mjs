@@ -45,7 +45,8 @@ export function detectGithubRemote(cwd) {
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   let value = null;
   try {
-    const out = execFileSync('git', ['-C', cwd, 'config', '--get', 'remote.origin.url'], {
+    // core.fsmonitor=false — 폴더의 .git/config 가 지정한 감시 명령을 실행하지 않게(스킬 동기화 훅은 사용자 조작 없이 돈다).
+    const out = execFileSync('git', ['-c', 'core.fsmonitor=false', '-C', cwd, 'config', '--get', 'remote.origin.url'], {
       encoding: 'utf8',
       timeout: 1000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -68,7 +69,7 @@ export function detectGithubRemote(cwd) {
 /** 저장소 최상위 경로 | null. */
 export function repoToplevel(cwd) {
   try {
-    return execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-C', cwd, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim() || null;
   } catch {

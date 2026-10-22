@@ -59,13 +59,16 @@ v2 가 필요한 경우는 하나뿐이다 — **한 사용자가 앱 안에서 
 [사용자] → pable studio 대시보드에서 서비스 카드 클릭
   → pable studio가 60초 JWT 발급 → 서비스의 /auth/sso?token=... 로 리디렉트
     → /auth/sso: 토큰 검증 → 자체 세션 JWT 재서명 → 쿠키 저장 → / 로 이동
+
+[세션 없음·만료] → {PORTAL_URL}/dashboard?error=sso_required&service={SERVICE_ID}
+  → (pable studio에 로그인돼 있지 않으면 로그인) → pable studio가 이 서비스로 자동 재진입 → 위 /auth/sso 흐름
 ```
 
 | 파일 | 역할 |
 |---|---|
 | `app/auth/sso/route.ts` | SSO 진입점 — pable studio JWT 검증·재서명·쿠키 발급 |
 | `app/page.tsx` (보호 페이지) | 세션 검증 + **역할 기반 기능 등급** |
-| `app/login/page.tsx` | **공개** "pable studio 대시보드로 접속" 안내 페이지 (비로그인 랜딩) |
+| `app/login/page.tsx` | **공개** 로그인 안내 페이지 — 로그아웃 뒤 도착·`PORTAL_URL` 미설정 폴백·공유 링크로 들어온 사용자 안내 |
 | `app/auth/logout/route.ts` | 세션 쿠키 삭제 후 `/login` |
 
 로컬 AI는 이 파일들을 **로컬 파일시스템에 직접 작성**한다.
@@ -96,7 +99,7 @@ pable studio에 등록된 식별자이고 **지어내는 값이 아니다.** JWT
 - **`serviceClaimPinned: true` 라도 래치가 아니다** — 승격 서비스 삭제·등록 재오픈 시 원래 값으로 되돌아온다. 어느 쪽이든 **배포 직전 재조회해 대조**하고, 달라졌으면 `SSO_SERVICE_ID` env 로 교체한다.
 - **비밀이 아니다** — `SSO_SECRET` 과 달리 채팅으로 다뤄도 된다(입력 카드 불필요).
 
-**AI 행동 규칙**: DEV_BYPASS mock 으로 화면을 먼저 만드는 단계에서는 `'my-service'` 자리표시자로 진행해도 된다(규칙 0). 단 **실제 SSO 를 켜는 시점**(`SSO_SECRET` 배선·배포 직전)에 반드시 도구 재조회 값으로 교체하고, 교체 전에는 배포하지 마라. 자리표시자인 채로 배포되면 pable studio가 이 앱을 찾지 못해 **에러 화면에 서비스 이름이 비어 보이고 복귀 흐름이 조용히 어긋난다.** 사용자가 아직 등록을 안 했으면 위 1~2번부터 진행한다.
+**AI 행동 규칙**: DEV_BYPASS mock 으로 화면을 먼저 만드는 단계에서는 `'my-service'` 자리표시자로 진행해도 된다(규칙 0). 단 **실제 SSO 를 켜는 시점**(`SSO_SECRET` 배선·배포 직전)에 반드시 도구 재조회 값으로 교체하고, 교체 전에는 배포하지 마라. 자리표시자인 채로 배포되면 pable studio가 이 앱을 찾지 못해 **세션이 만료돼도 자동 재진입이 안 되고(토스트만 뜬다) 에러 화면에 서비스 이름이 비어 보인다.** 사용자가 아직 등록을 안 했으면 위 1~2번부터 진행한다.
 
 **희망 ID 가 기존 정식 서비스와 겹치면** — 대행 등록이 자동으로 다른 식별자(`-2` 접미 등)를 시도하고, 최종 ID 는 관리자가 승인 단계에서 확정한다. 도구 재조회 값을 따르면 된다.
 
@@ -169,10 +172,18 @@ const PORTAL_URL = process.env.PORTAL_URL
 const SERVICE_ID = process.env.SSO_SERVICE_ID ?? 'my-service'
 const COOKIE_NAME = 'my_service_sso' // ← 서비스별 고유 (임의 값)
 
-// pable studio 복귀 헬퍼 — PORTAL_URL 이 없으면 죽은 절대주소 대신 자체 안내 페이지로 degrade
-const portalBack = (code: string, req: NextRequest) =>
+// 로컬(next dev)이면 &target=local — 생략하면 pable studio가 운영 배포로 재진입시킨다.
+// sso_required 에만 의미가 있다(나머지 코드는 토스트라 target 무관).
+const RELAUNCH_TARGET = process.env.NODE_ENV === 'development' ? '&target=local' : ''
+
+// pable studio 복귀 헬퍼 — 코드는 이 세 가지뿐(표에 없는 코드는 pable studio가 조용히 무시).
+// PORTAL_URL 이 없으면 죽은 절대주소 대신 자체 안내 페이지로 degrade.
+type PortalCode = 'sso_required' | 'sso_failed' | 'borrowing_inactive'
+const portalBack = (code: PortalCode, req: NextRequest) =>
   PORTAL_URL
-    ? NextResponse.redirect(`${PORTAL_URL}/dashboard?error=${code}&service=${SERVICE_ID}`)
+    ? NextResponse.redirect(
+        `${PORTAL_URL}/dashboard?error=${code}&service=${SERVICE_ID}${code === 'sso_required' ? RELAUNCH_TARGET : ''}`,
+      )
     : NextResponse.redirect(new URL('/login', req.url))
 const SESSION_TTL = 3600             // native 세션(초) — 1시간 이내 권장
 const BORROWING_TTL = 600            // borrowing 세션(초) — 잔존 윈도우 단축
@@ -212,8 +223,8 @@ function normalizeRole(raw: unknown): 'viewer' | 'editor' | 'owner' {
 
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
-  // 토큰 없이 진입 = pable studio 미경유 직접 접근 → 자체 안내 페이지로 (pable studio로 튕기지 않음)
-  if (!token) return NextResponse.redirect(new URL('/login', req.url))
+  // 토큰 없이 진입 = pable studio 미경유 직접 접근 → sso_required (pable studio가 로그인 후 자동 재진입)
+  if (!token) return portalBack('sso_required', req)
 
   try {
     // 규칙 1: pable studio JWT 검증 (60초, HS256 고정 — 가이드 §2 MUST)
@@ -246,9 +257,10 @@ export async function GET(req: NextRequest) {
       return portalBack('sso_failed', req)
     }
 
-    // 규칙 3: borrowing 가드 + TTL 분기
+    // 규칙 3: borrowing 가드 + TTL 분기 — 공유 회수·공개 해제 직후 토큰은 전용 코드로
+    // (sso_failed 로 보내면 pable studio 접속 기록에 "서비스 설정 오류"로 잘못 남는다)
     if (payload.via === 'grant' && payload.borrowing_active !== true) {
-      return portalBack('sso_failed', req)
+      return portalBack('borrowing_inactive', req)
     }
     const effectiveTtl = payload.borrowing_active === true ? BORROWING_TTL : SESSION_TTL
 
@@ -318,6 +330,7 @@ type Session = SSOPayload & { token: string | null }
 // (COOKIE_NAME·getSecret 을 두 파일에 중복 선언하는 것과 같은 이유).
 const COOKIE_NAME = 'my_service_sso'
 const SERVICE_ID = process.env.SSO_SERVICE_ID ?? 'my-service'  // route.ts 와 같은 값
+const PORTAL_URL = process.env.PORTAL_URL  // 하드코딩 폴백 금지 (route.ts 주석과 같은 이유)
 function getSecret() {
   const s = process.env.SSO_SECRET
   if (!s) throw new Error('SSO_SECRET 미설정')
@@ -358,8 +371,14 @@ async function getSession(): Promise<Session | null> {
 
 export default async function Page() {
   const session = await getSession()
-  // 규칙 7: 세션 없으면 pable studio로 곧장 튕기지 말고 자체 안내 페이지로
-  if (!session) redirect('/login')
+  // 규칙 7: 세션 없음·만료 → sso_required 로 pable studio에 보낸다. pable studio가 (필요하면 로그인 후)
+  // 이 서비스로 자동 재진입시킨다. 로컬(next dev)은 &target=local — 생략하면 운영 배포로 간다.
+  // PORTAL_URL 이 없으면 죽은 절대주소 대신 자체 안내 페이지로 degrade.
+  if (!session) {
+    redirect(PORTAL_URL
+      ? `${PORTAL_URL}/dashboard?error=sso_required&service=${SERVICE_ID}${process.env.NODE_ENV === 'development' ? '&target=local' : ''}`
+      : '/login')
+  }
 
   // 규칙 6: 역할 기반 기능 등급 (role 만 사용; via/tenant_name 은 권한 게이트 금지)
   const canEdit = ['editor', 'owner'].includes(session.role)          // editor·owner
@@ -400,25 +419,30 @@ function buildDevMockSession(): Session {
 ```
 > ⚠️ **UI 분기만으론 부족(보안)** — 편집·관리·삭제 같은 보호 동작은 **서버 라우트에서도 role 을 재검증**해야 한다(클라이언트 분기는 URL 직접 호출을 못 막음). 서버 가드 코드는 이 스킬의 **멀티테넌트 참조 문서**에서 확인한다.
 
-### `app/login/page.tsx` — 공개 "pable studio 대시보드로 접속" 안내 (규칙 7)
+### `app/login/page.tsx` — 공개 로그인 안내 (규칙 7)
 
-세션이 필요 없는 **공개 페이지**여야 한다(아니면 무한 리다이렉트).
+세션이 필요 없는 **공개 페이지**여야 한다(아니면 무한 리다이렉트). 로그아웃 뒤 도착하는 곳이자, `PORTAL_URL` 이 없을 때의 폴백, 그리고 공유 링크로 들어온 사용자(pable studio 자동 재진입 대상이 아님)를 위한 안내 화면이다.
 
 ```tsx
 const PORTAL_URL = process.env.PORTAL_URL  // 하드코딩 폴백 금지
+const SERVICE_ID = process.env.SSO_SERVICE_ID ?? 'my-service'  // route.ts 와 같은 값
+// sso_required 로 보내면 pable studio가 (필요하면 로그인 후) 이 서비스로 자동 재진입시킨다
+const LOGIN_URL = PORTAL_URL
+  ? `${PORTAL_URL}/dashboard?error=sso_required&service=${SERVICE_ID}${process.env.NODE_ENV === 'development' ? '&target=local' : ''}`
+  : null
 
 export default function LoginPage() {
   return (
     <main>
-      <h1>pable studio를 통해 접속해 주세요</h1>
+      <h1>pable studio 계정으로 로그인해 주세요</h1>
       <p>
-        이 서비스는 pable studio 대시보드를 통해서만 들어올 수 있어요.
-        pable studio 대시보드에서 이 서비스로 들어와 주세요.
-        (pable studio에 로그인돼 있지 않으면 자동으로 로그인 화면이 떠요.)
+        이 서비스는 pable studio 계정으로 로그인해요.
+        아래 버튼을 누르면 pable studio에서 로그인한 뒤 이 서비스로 자동으로 돌아와요.
+        (공유 링크로 들어왔다면 받은 링크로 다시 접속해 주세요.)
       </p>
-      {/* 주소를 모르면 죽은 링크 대신 아무것도 렌더하지 않는다 */}
-      {PORTAL_URL
-        ? <a href={`${PORTAL_URL}/dashboard`}>pable studio 대시보드 열기</a>
+      {/* 주소를 모르면 죽은 링크 대신 안내만 렌더한다 */}
+      {LOGIN_URL
+        ? <a href={LOGIN_URL}>pable studio로 로그인</a>
         : <p>pable studio 주소가 설정되지 않았어요. 관리자에게 <code>PORTAL_URL</code> 설정을 요청해 주세요.</p>}
     </main>
   )
@@ -430,6 +454,8 @@ export default function LoginPage() {
 ```ts
 import { NextResponse } from 'next/server'
 const COOKIE_NAME = 'my_service_sso'
+// 로그아웃은 반드시 자체 /login 으로 — sso_required 로 보내면 pable studio가 곧바로
+// 다시 로그인시켜 로그아웃이 무의미해진다.
 export async function GET(req: Request) {
   const res = NextResponse.redirect(new URL('/login', req.url))
   res.cookies.set(COOKIE_NAME, '', { path: '/', maxAge: 0 })
@@ -437,12 +463,20 @@ export async function GET(req: Request) {
 }
 ```
 
-## 에러 프로토콜 (규칙 5)
+## 에러 프로토콜 (규칙 5·7)
+
+pable studio로 보내는 주소는 한 형식이다: `{PORTAL_URL}/dashboard?error={코드}&service={SERVICE_ID}`. 이 서비스가 보내는 코드는 `sso_required`·`sso_failed`·`borrowing_inactive` **세 가지뿐**이다 — 표에 없는 코드는 pable studio가 조용히 무시한다.
+
+**규칙 7 — 세션 없음·만료는 `sso_required` 로 pable studio에 보낸다.** pable studio가 (로그인돼 있지 않으면 로그인을 받은 뒤) 이 서비스로 **자동 재진입**시킨다 — 사용자가 카드를 다시 찾을 필요가 없다. 자동 재진입 대상은 정식 서비스와 **등록자 본인의** 개발 등록이고, 그 밖(공유 링크로 들어온 다른 테스터 등)은 pable studio 대시보드에 안내 토스트가 뜬다. 같은 탭에서 60초 안에 자동 재진입이 반복되면 pable studio가 멈추고 안내를 띄운다.
+- `&target=local` — 로컬(`next dev`)에서만 붙인다. 생략하면 운영 배포로 재진입한다. pable studio에 로컬 포트가 등록돼 있어야 하고, 없으면 토스트로 끝난다.
+- 로그아웃은 예외 — 자체 `/login` 으로 보낸다(`sso_required` 면 곧바로 다시 로그인된다).
+- 🚫 `{PORTAL_URL}/auth/redirect?serviceId=` 를 쓰지 마라 — pable studio 내부 경로다. 정식 승격 전 앱은 "서비스를 찾을 수 없음"이 되고, pable studio에 로그인돼 있지 않으면 로그인 화면으로 자동 연결되지 않는다.
 
 | 코드 | 상황 | 처리 |
 |---|---|---|
-| `sso_required` | 세션 만료/직접 접근 (정상) | 자체 `/login` 안내 페이지 |
-| `sso_failed` | 실제 검증 실패 (키·tenant 불일치) | pable studio `?error=sso_failed` (관리자 로깅) |
+| `sso_required` | 세션 없음·만료, `/auth/sso` 에 토큰 없이 직접 접근 (정상) | pable studio가 로그인 후 자동 재진입 (대상이 아니면 토스트) |
+| `sso_failed` | 실제 검증 실패 (키·tenant 불일치) | pable studio 토스트 + 관리자 로깅 — 자동 재시도 안 함 |
+| `borrowing_inactive` | 공유받은 서비스인데 공유 회수·공개 해제 직후 토큰 (`via='grant'` + `borrowing_active` 아님) | pable studio 토스트 (공유 권한 회수 안내) |
 | `sso_not_issued` | 키 미승인 (pable studio가 진입 전 차단·발급 — 이 서비스는 emit·handle 안 함) | 관리자 승인 대기 안내 (코드 수정 대상 아님) |
 
 에러가 보이면 **코드를 다시 고치기 전에 pable studio부터 확인**하도록 안내:
@@ -453,9 +487,10 @@ export async function GET(req: Request) {
 
 | 증상 | 1순위 원인 | 확인·조치 |
 |---|---|---|
-| pable studio로 튕기는데 에러 화면에 서비스 이름이 비어 보인다 | `SERVICE_ID` 가 pable studio 값과 다름 (가장 흔함) | **주소창의 `?service=` 값**이 pable studio "내 서비스" 카드의 **"서비스 ID" 칩**과 글자 그대로 같은지 대조 → 다르면 `SSO_SERVICE_ID` env 로 교정 후 재배포 |
+| pable studio로 간 뒤 이 서비스로 자동으로 돌아오지 않고 토스트만 뜬다, 또는 에러 화면에 서비스 이름이 비어 보인다 | `SERVICE_ID` 가 pable studio 값과 다름 (가장 흔함). 그 밖에 승격 전 앱을 등록자가 아닌 사용자가 쓰는 경우(정상), 로컬인데 pable studio에 로컬 포트 미등록 | **주소창의 `?service=` 값**이 pable studio "내 서비스" 카드의 **"서비스 ID" 칩**과 글자 그대로 같은지 대조 → 다르면 `SSO_SERVICE_ID` env 로 교정 후 재배포 |
+| pable studio와 이 앱을 오가다 "방금 전에 이 서비스로 자동 접속을 시도했어요" 안내가 뜬다 | 세션 쿠키가 저장·전달되지 않는다 — `route.ts`·`page.tsx`·로그아웃의 `COOKIE_NAME` 불일치, 또는 http 주소에서 secure 쿠키 | 세 파일의 `COOKIE_NAME` 이 같은지, 배포 주소가 https 인지 확인 |
 | 로그인은 되는데 pable studio 데이터가 401 | 스코프 미승인, 또는 DEV_BYPASS mock(`token: null`) | pable studio에서 스코프 승인 상태 확인. mock 은 원래 pable studio API 를 못 부른다 |
-| pable studio로 갔는데 아무 안내도 없다 | 화이트리스트 밖 코드를 보냈다 | 이 서비스가 보내는 코드는 `sso_failed` 뿐이어야 한다. 임의 코드를 지어내지 마라 |
+| pable studio로 갔는데 아무 안내도 없다 | 표에 없는 코드를 보냈다 | 이 서비스가 보내는 코드는 `sso_required`·`sso_failed`·`borrowing_inactive` 세 가지뿐이어야 한다. 임의 코드를 지어내지 마라 |
 
 > 서버 로그에도 단서가 있다 — `SERVICE_ID` 불일치는 `[sso] SERVICE_ID 불일치` 경고로 남는다. 로컬 AI 는 `get_deploy_logs`(pax-infra-ops)로 배포 로그를 바로 볼 수 있다.
 

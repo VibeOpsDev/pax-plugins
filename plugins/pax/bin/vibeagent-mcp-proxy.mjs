@@ -33,7 +33,7 @@ const cwdForToken = () => (isInsideDir(process.cwd(), PLUGIN_ROOT) ? null : proc
 
 const PROTOCOL_VERSION = '2025-06-18';
 // version 은 마켓플레이스 배포 시 아래 placeholder 가 실제 버전으로 치환됨(단일 소스: src/lib/pluginVersion.ts).
-const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.0.0' };
+const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.1.0' };
 // 서버가 "이 사용자가 구버전인가"를 알 수 있는 유일한 신호. 서버는 **헤더 부재 = 기능 도입 이전 버전**으로
 // 판정하므로 값이 이상해도 보내는 것 자체는 유지한다(baked 상수라 실패할 수 없다).
 // 비-ASCII/제어문자가 섞이면 fetch 가 TypeError 를 던져 **전 도구 호출이 실패**하므로 필터는 필수.
@@ -55,7 +55,10 @@ const TOOLS = [
   { name: 'get_migrations', description: '적용된 Supabase 마이그레이션 버전 목록을 반환합니다(read-only).', inputSchema: NOARGS },
   {
     name: 'apply_supabase_change',
-    description: '테이블·컬럼을 생성하거나 컬럼을 추가합니다(DROP/DELETE 불가, 편집자/소유자 + GitHub 쓰기 권한 필요).',
+    description: '테이블·컬럼을 만들거나 컬럼을 추가하고, 접근 규칙(RLS)·인덱스를 설정합니다. 만든 인덱스 되돌리기도 됩니다(dropIndexes). '
+      + '테이블·컬럼 삭제와 타입 변경은 불가. 접근 규칙은 테이블마다 필요합니다 — user_id 컬럼이 있으면 본인 전용 규칙이 자동 생성되고, '
+      + '모두가 봐야 하면 policies 에 {operation:"SELECT", roles:["anon","authenticated"]}, 서버 전용이면 tables[].serverOnly. '
+      + '인덱스만 바꿀 때는 tables 생략 가능. 로그인 없이 읽히게 하는 공개 규칙은 사용자 동의 + confirmedPublic:true 필요. (편집자/소유자 + GitHub 쓰기 권한 필요)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -74,19 +77,77 @@ const TOOLS = [
                     type: { type: 'string' },
                     primaryKey: { type: 'boolean' },
                     nullable: { type: 'boolean' },
-                    unique: { type: 'boolean' },
+                    unique: { type: 'boolean', description: '중복 금지. UNIQUE 인덱스로 만들어지고 되돌릴 수 있습니다' },
                     defaultValue: { type: 'string' },
                     references: { type: 'object', properties: { table: { type: 'string' }, column: { type: 'string' } } },
                   },
                   required: ['name', 'type'],
                 },
               },
+              serverOnly: { type: 'boolean', description: '서버에서만 쓰는 저장 공간(감사 기록·작업 큐). 앱에서 직접 조회 불가' },
             },
             required: ['name', 'columns'],
           },
         },
+        policies: {
+          type: 'array',
+          description: '접근 규칙. 생략하면 user_id 컬럼이 있는 테이블에 본인 전용 규칙이 자동 생성됩니다',
+          items: {
+            type: 'object',
+            properties: {
+              table: { type: 'string' },
+              name: { type: 'string' },
+              operation: { type: 'string', enum: ['ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
+              check: {
+                type: 'object',
+                description: '생략하면 전체 허용 — operation 은 SELECT 만, roles 필수',
+                properties: {
+                  column: { type: 'string' },
+                  operator: { type: 'string', enum: ['=', '<>'] },
+                  value: { type: 'string', enum: ['auth.uid()'] },
+                },
+                required: ['column', 'operator', 'value'],
+              },
+              roles: {
+                type: 'array',
+                description: '누구에게 적용할지. anon=비로그인 포함',
+                items: { type: 'string', enum: ['anon', 'authenticated'] },
+              },
+            },
+            required: ['table', 'name', 'operation'],
+          },
+        },
+        indexes: {
+          type: 'array',
+          description: '검색 속도용 인덱스. unique:true 면 중복 금지도 함께',
+          items: {
+            type: 'object',
+            properties: {
+              table: { type: 'string' },
+              columns: { type: 'array', items: { type: 'string' } },
+              unique: { type: 'boolean' },
+            },
+            required: ['table', 'columns'],
+          },
+        },
+        confirmedPublic: {
+          type: 'boolean',
+          description: '로그인 없이 읽히게 하는 것을 사용자가 동의함(anon 공개 규칙에 필수)',
+        },
+        dropIndexes: {
+          type: 'array',
+          description: '만들었던 인덱스 되돌리기. unique 값을 실제와 똑같이 지정해야 합니다',
+          items: {
+            type: 'object',
+            properties: {
+              table: { type: 'string' },
+              columns: { type: 'array', items: { type: 'string' } },
+              unique: { type: 'boolean' },
+            },
+            required: ['table', 'columns'],
+          },
+        },
       },
-      required: ['tables'],
     },
   },
   { name: 'get_vercel_status', description: '최근 배포 상태를 반환합니다(read-only). 배포주소는 *.vercel.app 만 노출.', inputSchema: NOARGS },

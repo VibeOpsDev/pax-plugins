@@ -11,4 +11,4 @@ allowed-tools: Bash(node "*/bin/vibeagent-connect.mjs"*)
 node "${CLAUDE_PLUGIN_ROOT}/bin/vibeagent-connect.mjs" --disconnect
 ```
 
-3. 출력(`끊음: owner/name` 또는 `이 폴더에 연결된 프로젝트 토큰이 없어요.`)을 사용자에게 한 줄로 알리고, "다시 쓰려면 `/pax-preview:connect` 를 실행하세요." 를 덧붙이세요. 프로젝트 폴더에 내려온 스킬(`.claude/skills/pax-*`)은 지우지 않습니다(다음 연결 때 갱신됩니다).
+3. 출력(`끊음: owner/name` 또는 `이 폴더에 연결된 프로젝트 토큰이 없어요.`)을 사용자에게 한 줄로 알리고, "다시 쓰려면 `/pax-preview:connect` 를 실행하세요." 를 덧붙이세요. 프로젝트 폴더에 내려온 스킬(`.claude/skills/pax-*`)은 지우지 않습니다(다시 연결한 뒤 갱신됩니다).

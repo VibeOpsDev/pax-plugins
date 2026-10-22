@@ -83,7 +83,7 @@ await db.from('audit_logs').insert({
 ## 4. Borrowing(공유받은 회사) 처리
 
 - 공유 서비스는 `is_public=true` 전제. 사용 회사 멤버 전원에게 `services.default_role`(viewer 또는 editor) 일괄 부여. 사용 회사 안에서 user 단위 차등은 **pable studio가 못 준다**.
-- **잔존 윈도우**: pable studio 토큰은 60초지만 재서명 쿠키는 서비스 TTL까지 산다. `borrowing_active === true`면 쿠키 TTL을 **600초**로 단축(코어 코드의 `BORROWING_TTL`). 재서명 시점에 `via==='grant' && borrowing_active!==true`면 쿠키 발급 안 하고 pable studio로 되돌린다(grant revoke / is_public OFF 직후 차단).
+- **잔존 윈도우**: pable studio 토큰은 60초지만 재서명 쿠키는 서비스 TTL까지 산다. `borrowing_active === true`면 쿠키 TTL을 **600초**로 단축(코어 코드의 `BORROWING_TTL`). 재서명 시점에 `via==='grant' && borrowing_active!==true`면 쿠키 발급 안 하고 pable studio로 되돌린다(`?error=borrowing_inactive` — grant revoke / is_public OFF 직후 차단).
 
 ### 사용 회사 내부 관리자 지정 — 다운스트림 자체 책임
 

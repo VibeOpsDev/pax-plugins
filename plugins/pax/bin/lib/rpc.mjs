@@ -4,6 +4,7 @@
  * 배포 보호 우회(프리뷰 인스턴스, 2026-09-23): 인스턴스 폴더의 `deployment-bypass.json` 이 있으면 **그 origin·https 로 나가는 요청에만**
  * `x-vercel-protection-bypass` 를 붙인다(`deploymentBypassHeaders`). 없으면 헤더 없음 = 종전 동작. Vercel 엣지의 보호 401 은
  * `isDeploymentProtected` 로 알아보고 전용 안내(`DEPLOYMENT_PROTECTED_MESSAGE`)를 낸다 — 앱의 401(인증 만료)과 다른 원인이라서.
+ * 연결 전 확인(`connectPreflight`, 2.0.1)도 여기 둔다 — 같은 버전·접미사·우회 헤더 규칙을 공유해야 해서.
  */
 import { readDeploymentBypass } from './store.mjs';
 
@@ -76,6 +77,38 @@ export async function callTool(mcpUrl, token, name, args = {}, opts = {}) {
   if (data && data.result) return { ok: true, result: data.result };
   if (data && data.error && typeof data.error.message === 'string') return { ok: false, status, message: data.error.message };
   return { ok: false, status, message: `PAX 서버 오류 (HTTP ${status})` };
+}
+
+/**
+ * 연결 전 확인(2.0.1) — 리스너를 띄우기 전에 서버에 "이 설치본으로 연결을 시작해도 되는가" 를 묻는다(`GET /api/local-ai/connect-preflight`).
+ * 판정은 서버가 한다(플러그인 안에 기준을 박으면 다음 전환 때 바꿀 수 없다 — 1.x 가 연결 코드 인자에 묶여 막힌 선례, 2026-09-28).
+ * **fail-open**: 개발본(미치환 버전)·주소 도출 실패·네트워크·타임아웃(5s — 서버가 마커 조회 2s 를 끝까지 기다린다)·비 200·형식 이상은 전부
+ *   `{ stop:false }` — 확인 때문에 연결이 막히지 않는다.
+ * 안내 본문은 서버 문구 그대로 출력하되 길이 상한·제어문자 제거만 한다(도구 응답 안내와 같은 신뢰 수준 — 같은 origin 의 https 응답).
+ */
+export async function connectPreflight(mcpUrl, pluginVersion, { timeoutMs = 5000 } = {}) {
+  const PROCEED = { stop: false, guidance: null };
+  if (!/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(String(pluginVersion))) return PROCEED; // 미치환 개발본 — 서버에 묻지 않는다
+  const url = String(mcpUrl).replace(/\/api\/local-ai\/mcp\/?$/, '/api/local-ai/connect-preflight');
+  if (url === String(mcpUrl)) return PROCEED;
+  try {
+    const headers = { Accept: 'application/json', [PLUGIN_VERSION_HEADER]: String(pluginVersion) };
+    if (PLUGIN_ID) headers[PLUGIN_ID_HEADER] = PLUGIN_ID;
+    Object.assign(headers, deploymentBypassHeaders({ mcpUrl, targetUrl: url }));
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      redirect: 'error',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+    if (res.status !== 200) return PROCEED;
+    const data = await res.json().catch(() => null);
+    if (!data || data.action !== 'stop' || typeof data.guidance !== 'string' || !data.guidance.trim()) return PROCEED;
+    const guidance = data.guidance.replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '').slice(0, 8192);
+    return { stop: true, guidance };
+  } catch {
+    return PROCEED;
+  }
 }
 
 /** CallToolResult 의 텍스트를 한 줄로. */

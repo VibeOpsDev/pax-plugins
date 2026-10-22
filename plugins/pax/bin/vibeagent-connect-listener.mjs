@@ -27,7 +27,7 @@ import { writeJsonAtomic, writeProjectToken, writeFolderBinding, writeDeployment
 import { PLUGIN_VERSION_HEADER, deploymentBypassHeaders, isDeploymentProtected, DEPLOYMENT_PROTECTED_MESSAGE } from './lib/rpc.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const PLUGIN_VERSION = '2.0.0';
+const PLUGIN_VERSION = '2.1.0';
 const LIFETIME_MS = 600_000;
 
 function arg(name) {
