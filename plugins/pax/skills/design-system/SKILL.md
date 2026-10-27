@@ -12,6 +12,8 @@ description: "PAX(preview) · 테넌트 디자인 시스템(발행된 컴포넌�
 
 # 디자인 시스템 적용 — 로컬 개발
 
+**Codex:** PAX 연결은 호스트가 자동 전달하는 현재 채팅의 `threadId`로 선택됩니다. 도구 인자에 채팅 ID를 만들거나 다른 채팅의 값을 넣지 마세요. 연결은 `connect`, 해제는 `disconnect`, 스킬 저장은 `sync_skills` 도구를 사용합니다. `session_required`면 Codex 업데이트·재시작을 안내하고 최근 연결이나 폴더 연결로 우회하지 않습니다. 로컬 파일을 바꾸기 전에는 연결 서비스와 작업 폴더가 맞는지 확인하세요. Claude Code의 기존 호출 방식은 유지합니다.
+
 테넌트(회사)가 발행한 디자인 시스템의 **완성 컴포넌트 코드와 디자인 토큰**을 PAX MCP 로 가져와 쓴다.
 핵심 원칙: **디자인 정보를 보고 재해석해 새로 만들지 않는다 — 완성 코드를 그대로 복사한다.**
 도구는 PAX MCP 의 `list_design_components` / `get_design_component` / `get_design_foundation` (read 권한이면 사용 가능).

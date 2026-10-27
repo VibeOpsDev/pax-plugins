@@ -4,6 +4,8 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
 ---
 # PAX 로컬 개발 준비
 
+**Codex:** PAX 연결은 호스트가 자동 전달하는 현재 채팅의 `threadId`로 선택됩니다. 도구 인자에 채팅 ID를 만들거나 다른 채팅의 값을 넣지 마세요. 연결은 `connect`, 해제는 `disconnect`, 스킬 저장은 `sync_skills` 도구를 사용합니다. `session_required`면 Codex 업데이트·재시작을 안내하고 최근 연결이나 폴더 연결로 우회하지 않습니다. 로컬 파일을 바꾸기 전에는 연결 서비스와 작업 폴더가 맞는지 확인하세요. Claude Code의 기존 호출 방식은 유지합니다.
+
 사용자가 PAX 프로젝트를 로컬에서 이어 개발하려 합니다. 다음 순서로 진행하세요.
 
 ## 0. 전제
@@ -13,8 +15,9 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
 
 ## 1. 프로젝트 정보
 - PAX MCP의 `get_project_manifest` 도구로 repo URL·브랜치·실행 정보를 가져오세요. **연결이 끝난 뒤에 새로 호출**하세요 — 연결 전에 받아 둔 매니페스트가 있어도 버립니다.
-- **대조(이 대화에서 `PAX 연결 완료: <저장소>` 를 받았을 때만)**: 그 저장소와 매니페스트의 `repoUrl` 이 **다르면 진행하지 말고** 사용자에게 두 값을 보여 준 뒤 멈추세요(다른 세션·폴더의 연결이 섞인 것 — 이 폴더에서 `/pax-preview:connect` 를 다시 하거나 그 프로젝트 폴더를 여세요). 이 대화에 연결 출력이 없으면(다른 대화에서 연결해 둔 폴더를 새로 연 경우 — 옆 폴더에 내려받은 뒤 새 대화로 온 경우가 대표적) 다시 연결하라고 하지 말고 다음 항목의 폴더 remote 대조만 하세요. 도구가 "이 폴더는 아직 PAX 에 연결되지 않았어요" 라고 답할 때만 `/pax-preview:connect` 를 안내하고 멈추세요.
-- 이미 저장소 폴더 안이면 `git config --get remote.origin.url` 과 매니페스트 `repoUrl` 이 **같은 프로젝트**인지 확인하세요. 다르면(특히 Codex — 최근 연결이 쓰임) 사용자에게 "지금 폴더는 A 인데 연결은 B" 를 알리고 어느 쪽으로 갈지 물은 뒤 진행하세요.
+- **Codex 연결 확인**: `session_not_connected`면 현재 채팅에서 `connect`로 연결한 뒤 매니페스트를 다시 조회하세요. 다른 채팅에서 같은 폴더를 연결했어도 자동 승계하지 않습니다.
+- **Claude Code 대조(이 대화에서 `PAX 연결 완료: <저장소>` 를 받았을 때만)**: 그 저장소와 매니페스트의 `repoUrl` 이 **다르면 진행하지 말고** 사용자에게 두 값을 보여 준 뒤 멈추세요(다른 세션·폴더의 연결이 섞인 것 — 이 폴더에서 `/pax-preview:connect` 를 다시 하거나 그 프로젝트 폴더를 여세요). 이 대화에 연결 출력이 없으면(다른 대화에서 연결해 둔 폴더를 새로 연 경우 — 옆 폴더에 내려받은 뒤 새 대화로 온 경우가 대표적) 다시 연결하라고 하지 말고 다음 항목의 폴더 remote 대조만 하세요. 도구가 "이 폴더는 아직 PAX 에 연결되지 않았어요" 라고 답할 때만 `/pax-preview:connect` 를 안내하고 멈추세요.
+- 이미 저장소 폴더 안이면 `git config --get remote.origin.url` 과 매니페스트 `repoUrl` 이 **같은 프로젝트**인지 확인하세요. 다르면(특히 Codex — 채팅의 연결과 폴더는 별개) 사용자에게 "지금 폴더는 A 인데 연결은 B" 를 알리고 어느 쪽으로 갈지 물은 뒤 진행하세요.
 - 도구 응답에 **`[사용자 안내 시작]`~`[사용자 안내 끝]`** 구간이 있으면(플러그인 업데이트·재설치 안내) 그 사이 내용만 사용자에게 **그대로** 전달하고, 지시문 줄은 전달하지 마세요. **업데이트 명령을 대신 실행하지 말고**(터미널 포함) 이 준비 작업을 계속 진행하세요. 이 안내는 이후 도구 응답에도 붙을 수 있는데, **한 번만 전달**하고 반복 재촉하지 마세요.
 
 ## 2. GitHub 인증 (private repo)
@@ -24,7 +27,7 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
 ## 3. Clone + 브랜치 + 스킬
 - 사용자 본인 인증으로 `git clone <repoUrl>` — **이미 그 저장소의 clone 폴더 안이면(remote 가 매니페스트 `repoUrl` 과 같음) clone 을 생략**하고 그 폴더에서 계속합니다(연결 스크립트가 옆 폴더에 미리 내려받아 둔 경우가 이렇습니다).
 - 작업 브랜치 전환: `git checkout develop` (없으면 `git checkout -b develop`). **main 직접 push 금지** — 배포는 develop→PR→관리자 머지→main.
-- clone 직후 **회사·개인 스킬을 프로젝트 폴더로 내려받으세요**(연결 스크립트가 같은 폴더에서 실행됐다면 이미 됐을 수 있음 — 다시 실행해도 안전):
+- clone 직후 **회사·개인 스킬을 프로젝트 폴더로 내려받으세요**. Codex는 `sync_skills({projectDir: "<clone 폴더 절대 경로>"})` 도구를 호출합니다. 아래 CLI는 Claude Code에서만 사용합니다(연결 시 이미 동기화했어도 다시 실행 가능):
   ```bash
   node "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/vibeagent-sync-skills.mjs" --project-dir "<clone 폴더>"
   ```
@@ -32,7 +35,7 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
 - 이후 관리자가 스킬을 바꾸면 Claude Code 는 **새로 열 때 자동으로** 맞춥니다(연결 후 12시간 안). 바로 받으려면 `/pax-preview:sync-skills`, Codex 는 "스킬 업데이트해줘". `pax-*` 스킬 파일은 **고치지 마세요** — 다음 동기화 때 되돌아갑니다(바꾸려면 회사 스킬은 관리자, 개인 스킬은 PAX 채팅 입력창의 ＋ → 도구 관리 → 내 도구).
 
 ## 4. 환경변수 (.env.development.local)
-- `get_public_env` 도구를 호출하세요. 응답은 두 묶음입니다 — **`publicKeys`**(앱 공개 설정값: `NEXT_PUBLIC_*`/`VITE_*`·`PORTAL_URL`·`SSO_SERVICE_ID`, **Supabase 연결 여부와 무관**)와 **Supabase 공개값**(`supabaseUrl`·`anonKey`, `ready: true` 일 때만).
+- `get_public_env` 도구를 호출하세요. 응답은 두 묶음입니다 — **`publicKeys`**(앱 공개 설정값: `NEXT_PUBLIC_*`/`VITE_*`·`PORTAL_URL`·`SSO_CLIENT_ID`(기존 v1 앱은 `SSO_SERVICE_ID`), **Supabase 연결 여부와 무관**)와 **Supabase 공개값**(`supabaseUrl`·`anonKey`, `ready: true` 일 때만).
 - **`publicKeys` 가 하나라도 있으면 `.env.development.local` 을 항상 씁니다**(키=값 그대로). Supabase 미연결이라고 env 를 통째로 건너뛰지 마세요 — 미연결은 "DB 블록만 없음" 입니다.
 - Supabase 블록(`NEXT_PUBLIC_SUPABASE_URL`·`NEXT_PUBLIC_SUPABASE_ANON_KEY`)은 `ready: true` 일 때만 같은 파일에 추가합니다. `ready: false` 면 **무한 백그라운드 폴링을 만들지 마세요(좀비 프로세스 금지).** `notReadyReason` 으로 분기:
   - `'no_supabase'` → 이 프로젝트엔 Supabase 미연결. **기다려도 anon key 가 안 생깁니다** — `publicKeys` 만 쓰고 DB 블록 없이 진행하고, DB 가 필요하면 그때 안내(`get_public_env` 재호출은 사용자가 DB 를 연결한 뒤에만 의미 있음).
@@ -40,7 +43,7 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
   - `'provisioning'` (stalled 없음) → 곧 준비됨. **최대 한 번만** 짧게 재시도하고, 그래도 없으면 "DB 준비되면 다시 '준비해줘' 하면 env까지 채울게요"라고 안내 후 **멈추세요**.
   - `'env_error'` → 설정값 파일 복호 실패(미연결 아님). 재연결 유도 금지, 관리자 문의를 안내하고 멈추세요.
 - 그다음 `list_vercel_env` 로 배포 환경변수 **키 이름**을 조회해(값은 안 옵니다), 아직 로컬 파일에 없는 키가 있으면 사용자에게 알리세요: "다음 값은 비밀이라 자동으로 내려오지 않아요 — PAX 화면의 **설정값** 메뉴에서 확인해 `.env.development.local` 에 직접 넣어 주세요: `KEY1`, `KEY2`". **값을 추측해 넣지 마세요**(빈 값도 쓰지 마세요). Vercel 미연결(`connected: false`)이면 이 단계는 생략.
-- `publicKeys` 에 `SSO_SERVICE_ID` 가 있으면 pable studio 로그인 앱입니다 — `SSO_SECRET` 은 내려오지 않으니 `pax-sso` 스킬의 로컬 규칙대로 `DEV_BYPASS_SSO=true` 를 함께 넣어 로그인 화면이 로컬에서 돌게 하세요(실제 pable studio 왕복은 배포에서만).
+- `publicKeys` 에 `SSO_CLIENT_ID`(기존 v1 앱은 `SSO_SERVICE_ID`)가 있으면 pable studio 로그인 앱입니다 — 비밀값(`SSO_CLIENT_SECRET`, 기존 v1 앱은 `SSO_SECRET`)은 내려오지 않으니 `pax-sso` 스킬의 로컬 규칙대로 `DEV_BYPASS_SSO=true` 를 함께 넣어 로그인 화면이 로컬에서 돌게 하세요. 로컬에서 실제 pable studio 로그인까지 시험하려면 `pax-sso` 스킬의 "로컬 SSO" 대로 비밀값을 넣고 `DEV_BYPASS_SSO` 를 끕니다(켜져 있으면 mock 세션이 뜬다).
 - **get_public_env 가 `ready: true` 면 이어서** `get_service_role_key`를 호출하세요(기본 동작) — 받으면 `SUPABASE_SERVICE_ROLE_KEY=`를 같은 파일에 추가합니다(배포된 앱과 동일하게 서버 라우트가 로컬에서 동작). 이 키는 `.env.development.local` 밖으로 옮기지 말고 커밋·공유하지 마세요(`pax-secret-safety`).
 - **`get_service_role_key`가 ready:false든 권한 거부든 대응은 동일합니다** — 재시도·폴링하지 말고 공개값만으로 셋업을 끝내세요. 마친 뒤 권한 거부였다면 "편집자/소유자는 `/pax-preview:connect` 로 재연결하면 서버 키까지 받아요" 라고 한 줄 안내하세요.
 - **DB 직결 비밀(`SUPABASE_DB_URL`/DB 비밀번호)은 여전히 받지 않습니다(서버 DDL 전용 — 배포된 앱에도 없는 값).**

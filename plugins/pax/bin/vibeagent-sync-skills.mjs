@@ -33,12 +33,14 @@ import { join, resolve, sep, relative, isAbsolute, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { selectToken, instanceDir, readJson, writeJsonAtomic } from './lib/store.mjs';
+import { validateSessionId, readSessionToken } from './lib/session.mjs';
+import { isUsable, repoUrlToSlug } from './lib/store.mjs';
 import { detectGithubRemote, repoToplevel } from './lib/gitRemote.mjs';
 import { callTool, resultText, PLUGIN_ID } from './lib/rpc.mjs';
 import { containsShellDirective } from './lib/skillGuard.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const PLUGIN_VERSION = '2.1.0';
+const PLUGIN_VERSION = '2.2.1';
 /** 이 플러그인의 설치 이름 — 마커 `instance=` 에 기록(원본도 명시값: 빈 값이면 마커 없는 옛 사본과 구분이 안 된다). */
 const PLUGIN_NAME = PLUGIN_ID ? `pax-${PLUGIN_ID}` : 'pax';
 const MAX_SKILLS = 50;
@@ -284,7 +286,10 @@ async function main() {
   if (HOOK && hasManaged) modelLines.push(RULE_LINE);
   if (HOOK && (source === 'clear' || source === 'compact')) return; // 대화 정리 뒤엔 규칙만 다시 준다(네트워크 없음)
 
-  const sel = selectToken({ mcpUrl: MCP_URL, cwd: realDir });
+  const sessionId = process.argv.includes('--session-id') ? validateSessionId(arg('--session-id')) : null;
+  const sessionEntry = sessionId ? readSessionToken(MCP_URL, sessionId) : null;
+  if (sessionId && (!isUsable(sessionEntry) || repoUrlToSlug(sessionEntry.repoUrl) !== remote.slug)) die(3, 'session_folder_mismatch: 이 채팅의 연결 프로젝트와 폴더 remote가 다르거나 연결이 만료됐어요.');
+  const sel = sessionId ? { kind: 'project', entry: sessionEntry, slug: remote.slug } : selectToken({ mcpUrl: MCP_URL, cwd: realDir });
   if (sel.kind !== 'project') {
     if (HOOK) {
       if (sel.reason === 'expired' && hasManaged && onceADay(openStateDir(realDir), 'auth-expired')) {

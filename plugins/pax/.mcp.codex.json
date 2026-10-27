@@ -4,7 +4,8 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "bin/vibeagent-mcp-proxy.mjs"
+        "bin/vibeagent-mcp-proxy.mjs",
+        "--require-session"
       ],
       "cwd": "./"
     }

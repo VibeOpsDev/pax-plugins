@@ -4,6 +4,8 @@ description: "PAX(preview) · 로컬에서 private GitHub repo를 clone/push 하
 ---
 # 로컬 GitHub 인증
 
+**Codex:** PAX 연결은 호스트가 자동 전달하는 현재 채팅의 `threadId`로 선택됩니다. 도구 인자에 채팅 ID를 만들거나 다른 채팅의 값을 넣지 마세요. 연결은 `connect`, 해제는 `disconnect`, 스킬 저장은 `sync_skills` 도구를 사용합니다. `session_required`면 Codex 업데이트·재시작을 안내하고 최근 연결이나 폴더 연결로 우회하지 않습니다. 로컬 파일을 바꾸기 전에는 연결 서비스와 작업 폴더가 맞는지 확인하세요. Claude Code의 기존 호출 방식은 유지합니다.
+
 private repo는 **사용자 본인의 GitHub 인증**으로 clone/push 합니다. PAX 서버는 GitHub 토큰을 내려주지 않습니다.
 
 - 확인: `git ls-remote <repoUrl>` 성공 = 인증 있음(여기서 끝). 실패 시에만 아래 진행.

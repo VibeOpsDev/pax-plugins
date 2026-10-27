@@ -23,17 +23,24 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { validateSessionId, writeSessionToken } from './lib/session.mjs';
+import { validateProjectDir } from './lib/projectDir.mjs';
+import { detectGithubRemote } from './lib/gitRemote.mjs';
+import { acquirePendingLock } from './lib/pendingLock.mjs';
 import { writeJsonAtomic, writeProjectToken, writeFolderBinding, writeDeploymentBypass, isValidBypassSecret } from './lib/store.mjs';
 import { PLUGIN_VERSION_HEADER, deploymentBypassHeaders, isDeploymentProtected, DEPLOYMENT_PROTECTED_MESSAGE } from './lib/rpc.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const PLUGIN_VERSION = '2.1.0';
+const PLUGIN_VERSION = '2.2.1';
 const LIFETIME_MS = 600_000;
 
 function arg(name) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
+const sessionId = process.argv.includes('--session-id') ? validateSessionId(arg('--session-id')) : null;
 const mode = process.argv.includes('--serve') ? 'serve' : process.argv.includes('--spawn') ? 'spawn' : null;
 const nonce = arg('--nonce');
 const statePath = arg('--state');
@@ -41,6 +48,17 @@ const previousJti = arg('--previous-jti') || null;
 const urlTemplate = arg('--url') || null;
 // remote 없는 폴더에서 시작한 연결 — 교환 성공 시 이 폴더 ↔ 고른 프로젝트를 묶는다(connect 스크립트가 done 을 10분 안에 소비하지 못해도 바인딩은 남는다).
 const bindDir = arg('--bind-dir') || null;
+const projectDir = arg('--project-dir') || null;
+const expectedRepo = arg('--expected-repo') === '-' ? null : arg('--expected-repo') ?? null;
+const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+function validateRequest() {
+  if (existsSync(`${statePath}.cancelled`)) throw new Error('cancelled: 이 연결 요청은 취소됐어요.');
+  if (!projectDir) return;
+  if (validateProjectDir(projectDir, pluginRoot) !== projectDir ||
+      (detectGithubRemote(projectDir, { fresh: true })?.slug ?? null) !== expectedRepo) {
+    throw new Error('projectDir: 연결을 시작한 폴더가 바뀌었어요. 다시 연결하세요.');
+  }
+}
 const exp = Number(arg('--exp')) || Date.now() + LIFETIME_MS;
 
 if (!mode || !nonce || !statePath) {
@@ -62,7 +80,7 @@ if (mode === 'spawn') {
 }
 
 // ─── serve ────────────────────────────────────────────────────────────────
-const state = { status: 'starting', pid: process.pid, port: null, url: null, started: Date.now(), exp, message: null, result: null };
+const state = { status: 'starting', pid: process.pid, port: null, url: null, started: Date.now(), exp, message: null, result: null, projectDir, expectedRepo, sessionId };
 function saveState(patch) {
   Object.assign(state, patch);
   try { writeJsonAtomic(statePath, state); } catch { /* 상태 파일 실패는 치명 아님 */ }
@@ -184,6 +202,7 @@ const server = http.createServer((req, res) => {
 
 const backoff = (attempt) => new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
 async function exchange(code, bypass = null) {
+  try { validateRequest(); } catch (e) { return { ok: false, message: e.message }; }
   const exchangeUrl = MCP_URL.replace(/\/api\/local-ai\/mcp\/?$/, '/api/local-ai/token/exchange');
   // 우회 값은 교환 전에 적는다(교환이 실패해도 다음 도구 호출·재연결이 쓴다). 저장 실패는 이번 교환을 막지 않는다(메모리 값으로 진행).
   // 값이 없으면(GET) 기존 파일을 그대로 둔다 — 아래 헤더 조립이 파일을 읽어 쓴다.
@@ -210,14 +229,28 @@ async function exchange(code, bypass = null) {
       continue;
     }
     if (res.ok && typeof data.token === 'string' && typeof data.repoUrl === 'string') {
+      let unlock;
       try {
-        const slug = writeProjectToken(MCP_URL, { token: data.token, expiresAt: data.expiresAt ?? null, scopes: data.scopes ?? [], jti: data.jti ?? null, repoUrl: data.repoUrl });
-        if (bindDir) { try { writeFolderBinding(MCP_URL, bindDir, { slug, repoUrl: data.repoUrl }); } catch { /* connect 스크립트의 done 소비가 보조로 재기록 */ } }
+        // Token/binding writes and disconnect must not interleave after validation.
+        const until = Date.now() + 12_000;
+        while (!(unlock = acquirePendingLock(dirname(statePath))) && Date.now() < until) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (!unlock) throw new Error('connection_busy: 다른 연결 명령이 실행 중입니다.');
+        validateRequest();
+        if (projectDir && expectedRepo && data.repoUrl.toLowerCase().replace(/\/$/, '') !== `https://github.com/${expectedRepo}`) {
+          throw new Error('projectDir: 선택한 프로젝트가 이 폴더의 remote 와 다릅니다.');
+        }
+        const tokenData = { token: data.token, expiresAt: data.expiresAt ?? null, scopes: data.scopes ?? [], jti: data.jti ?? null, repoUrl: data.repoUrl };
+        let slug;
+        if (sessionId) { writeSessionToken(MCP_URL, sessionId, tokenData); slug = data.repoUrl.replace(/^https:\/\/github\.com\//i, '').toLowerCase(); }
+        else slug = writeProjectToken(MCP_URL, tokenData);
+        if (!sessionId && bindDir) { try { writeFolderBinding(MCP_URL, bindDir, { slug, repoUrl: data.repoUrl }); } catch { /* connect 스크립트의 done 소비가 보조로 재기록 */ } }
         return { ok: true, result: { repoUrl: data.repoUrl, slug, jti: data.jti ?? null, scopes: data.scopes ?? [], expiresAt: data.expiresAt ?? null } };
       } catch (e) {
         // 토큰은 서버에서 이미 발급됐다 — 재시도하면 code_invalid 가 진짜 원인(로컬 저장 실패)을 가린다.
         return { ok: false, message: `store: 토큰 파일을 저장하지 못했어요(${e?.code ?? e?.message ?? e}). 설정 폴더(~/.config/vibeagent)의 권한을 확인한 뒤 /pax-preview:connect 를 다시 실행하세요.` };
-      }
+      } finally { unlock?.(); }
     }
     // Vercel 배포 보호의 엣지 401 — 앱에 닿지 못했다(우리 응답엔 항상 최상위 `code` 가 있다). 재시도 무의미.
     if (isDeploymentProtected(res.status, data)) return { ok: false, message: `deployment_protected: ${DEPLOYMENT_PROTECTED_MESSAGE}` };
@@ -236,6 +269,8 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(0, '127.0.0.1', () => {
+  try { validateRequest(); }
+  catch (e) { saveState({ status: 'failed', message: e.message }); server.close(); process.exit(1); }
   const port = server.address().port;
   const url = urlTemplate ? urlTemplate.replace('{port}', String(port)) : null;
   saveState({ status: 'waiting', port, url });

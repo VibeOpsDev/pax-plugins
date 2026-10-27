@@ -6,28 +6,35 @@ SSO 로그인 후 만든 서비스가 **pable studio 데이터(조직·사용자
 
 ## 인증 모델
 
-- 호출 인증 = **세션 쿠키에 담긴 재서명 JWT를 그대로 `Authorization: Bearer`** 로 전달. 서비스의 `SSO_SECRET`(서비스별 키)으로 HS256 서명된 토큰이면 된다.
-- `payload.service` 클레임이 자기 서비스 ID와 정확히 일치해야 한다(다른 서비스 키로 서명하면 401).
-- **Bearer 호출 자격** = pable studio에 SSO 키가 발급돼 있고(`sso_secret_enc IS NOT NULL`) `granted_scopes`가 1개 이상. 스코프 0개면 self-read 조차 401.
-- **호출 대상 주소는 세션의 `portal_origin` 우선, env `PORTAL_URL` 폴백** (SKILL.md 의 `resolvePortalOrigin`). env 고정 주소로 호출하면 pable studio 도메인이 바뀔 때 cross-origin 리다이렉트에서 `Authorization` 헤더가 삭제돼 **전부 401** 이 된다.
-- **쿠키를 직접 읽지 마라** — 반드시 `getSession()`(서명 검증 통과)을 거친다. 검증 전 토큰의 `portal_origin` 으로 호출하면 위조 토큰이 Bearer 자격증명을 임의 호스트로 빼돌릴 수 있다.
+- Bearer = **서버 라우트에서 `getAccessToken()`**(`sso-v2.md` 의 `lib/portal-token.ts`)으로 받은 **pable studio 접근 토큰**. 60초짜리라 `getAccessToken()` 이 로그인 유지(refresh)로 알아서 새로 받는다.
+  앱 세션 JWT(자체 서명)를 Bearer 로 보내면 401 이다 — 세션에는 Bearer 토큰이 없다.
+- **호출 주소는 `access.portalOrigin`**(= `PORTAL_URL`, 토큰 발급자와 같은 주소). 쿼리·요청 값으로 주소를 만들지 마라.
+- **Bearer 호출 자격** = 비밀값(client secret) 클라이언트 + 승인 스코프 1개 이상 + 토큰 `tenant_id` 가 **등록 회사**. 스코프 0개면 본인 조회까지 401, 다른 회사 계정(운영자 직권 진입 포함)으로 로그인한 세션도 사내 데이터를 부르지 못한다.
+- 토큰은 응답 본문·로그·클라이언트 컴포넌트에 싣지 않는다(서버 라우트 안에서만 쓴다).
+- **사람 없이 부르는 호출(크론·예약 작업·정기 발송)은 이 방식으로 하지 않는다** — 접근 토큰은 로그인한 사람이 있을 때만 받는다. 로그인 유지(refresh)·접근 토큰을 저장해 두고 나중에 쓰지 마라(SKILL.md "사람 없이 자동으로 부르는 기능").
+- (기존 v1 앱의 Bearer 는 `sso-v1.md` §6 — 새 앱에 쓰지 마라.)
 
 ```ts
-// 서버 라우트 안에서 — 검증된 세션의 토큰과 origin 을 함께 쓴다
-const session = await getSession()            // SKILL.md 의 헬퍼 (jwtVerify 통과)
-// ⚠️ getSession·resolvePortalOrigin 은 **이 라우트 파일에도 그대로 복사 선언**한다.
-//    import 하지 마라 — page.tsx 에서 export 하면 Next 가 타입 에러로 막는다
-//    (COOKIE_NAME·getSecret 을 파일마다 중복 선언하는 것과 같은 이유).
-if (!session?.token) return new Response(null, { status: 401 })
-const origin = resolvePortalOrigin(session)   // portal_origin → env → null
-if (!origin) return new Response(null, { status: 503 })  // pable studio 주소 미설정 — 호출 자체를 안 한다
+// 서버 라우트 안에서 — 토큰은 응답에 싣지 않는다
+import { getSession } from '@/lib/sso'
+import { getAccessToken } from '@/lib/portal-token'
 
-const res = await fetch(`${origin}/api/org/users/${encodeURIComponent(email)}`, {
-  headers: { Authorization: `Bearer ${session.token}` },
+const session = await getSession()
+if (!session) return Response.json({ code: 'sso_required' }, { status: 401 })
+const access = await getAccessToken()
+if (!access.ok) {
+  if (access.reason === 'dev_bypass') return Response.json({ user: null }) // mock — 예시 데이터·빈 상태로 대신한다
+  return access.reason === 'login_required'
+    ? Response.json({ code: 'sso_required' }, { status: 401 }) // 화면은 /auth/sso 링크로 안내(자동 반복 이동 금지)
+    : Response.json({ code: 'unavailable' }, { status: 503 })
+}
+const res = await fetch(`${access.portalOrigin}/api/org/users/${encodeURIComponent(email)}`, {
+  headers: { Authorization: `Bearer ${access.token}` },
+  cache: 'no-store',
 })
 ```
 
-> **DEV_BYPASS 함정** — mock 세션은 `token: null` 이라 pable studio API 호출이 불가능하다(401). 로컬 mock 으로는 pable studio 데이터 화면을 확인할 수 없으니, 픽스처나 빈 상태로 폴백하고 **실제 데이터는 실제 SSO 왕복으로** 확인한다.
+> **DEV_BYPASS 함정** — mock 세션에는 pable studio 접근 토큰이 없어(`getAccessToken()` 이 `reason: 'dev_bypass'`) pable studio API 를 부를 수 없다. 로컬 mock 으로는 pable studio 데이터 화면을 확인할 수 없으니, 픽스처나 빈 상태로 폴백하고 **실제 데이터는 실제 SSO 왕복으로** 확인한다.
 
 ## 엔드포인트 카탈로그
 
@@ -81,7 +88,7 @@ const res = await fetch(`${origin}/api/org/users/${encodeURIComponent(email)}`, 
 - 쿼리: `folder`(기본 `inbox` — well-known 이름 또는 folder ID) / `top`(1~50, 기본 20) / `unreadOnly` / `search`(allowlist `^[\p{L}\p{N}\s.@_-]{1,128}$` — 한글 가능, 따옴표·콜론·백슬래시 차단)
 - `search` 와 `unreadOnly` 는 **동시 사용 불가**(400 `search_filter_conflict`), 검색 모드는 mailbox 전체라 `folder` 무시
 - 응답 `{ messages: { id, subject, from, receivedDateTime, bodyPreview, isRead, hasAttachments, importance, webLink }[], nextCursor: null }` — 본문 전체·첨부·읽음 처리는 **불가**(위젯 용도 의도적 제한). `webLink` 로 Outlook 웹 진입
-- 위젯 폴링(보통 30초) 시 Bearer TTL 60초 → 매 호출 새 토큰을 받거나 서비스 자체 재서명 토큰 사용.
+- 위젯 폴링(보통 30초) 시 접근 토큰은 60초 — 호출마다 `getAccessToken()` 을 부르면 로그인 유지(refresh)로 알아서 새로 받는다.
 
 ### 프레즌스 — 단건 GET / 배치 POST
 
@@ -110,7 +117,7 @@ const res = await fetch(`${origin}/api/org/users/${encodeURIComponent(email)}`, 
 
 ## 스코프 신청
 
-- 스코프 = "이 서비스가 pable studio를 통해 호출할 수 있는 리소스 범위". **"SSO 발급 신청"** 전에 SSO 키 영역에서 필요한 스코프만 체크 → 관리자 승인.
+- 스코프 = "이 서비스가 pable studio를 통해 호출할 수 있는 리소스 범위". 사용자가 pable studio **"SSO 키"** 창에서 필요한 스코프만 골라 신청 → 관리자 승인. **키는 바뀌지 않는다**(재배선·재배포 불필요, 다음 로그인부터 반영).
 - **위임 스코프**(`graph.me.*`, 캘린더·메일·프레즌스 등)는 해당 사용자가 **pable studio에 최소 1회 로그인**했어야 한다(Microsoft refresh_token 저장). 미로그인 시 **403 `portal_login_required`** — 재시도로 안 풀리고 사용자가 pable studio에서 동의해야 함.
 - **민감 스코프**(Mail.Read/Send 등)는 매 호출마다 서버가 DB로 재확인 → 관리자가 회수하면 토큰이 유효해도 즉시 차단.
 
@@ -122,5 +129,5 @@ SSO JWT에는 사진이 없다(용량). 두 가지:
 
 ## 에러 / 키 회전
 
-- `401` = 인증 실패(서명·service 불일치·스코프 0). `403 scope_mismatch` = 서비스 `granted_scopes` 에 요구 스코프 없음(승인 필요). `403 portal_login_required` = 위임 스코프인데 사용자 pable studio 미로그인/동의 회수 — 재시도로 안 풀림. `400 invalid_request` = 쿼리·바디 검증 실패(code 필드로 세분). `502` = pable studio→Microsoft Graph 호출 실패. `503 transient` = 일시 오류, 잠시 후 재시도.
-- **키 회전**: pable studio에서 회전하면 이전 키는 즉시 무효 → 서비스 `SSO_SECRET`을 새 값으로 교체해야 함(회전 후 401 지속 = 옛 평문 잔존).
+- `401` = 인증 실패(토큰 검증 실패·승인 스코프 0·다른 회사 토큰). `403 scope_mismatch` = 서비스 `granted_scopes` 에 요구 스코프 없음(승인 필요). `403 portal_login_required` = 위임 스코프인데 사용자 pable studio 미로그인/동의 회수 — 재시도로 안 풀림. `400 invalid_request` = 쿼리·바디 검증 실패(code 필드로 세분). `502` = pable studio→Microsoft Graph 호출 실패. `503 transient` = 일시 오류, 잠시 후 재시도.
+- **키 재발급**: 스코프를 바꿔도 키는 그대로다. 키를 재발급했을 때만 이전 키가 1시간 함께 통과하고(유출 대응이면 즉시 중단) `SSO_CLIENT_SECRET` 을 새 값으로 교체한다(`claim_portal_sso_key` force → 재배포). 재발급은 등록마다 24시간에 3번까지(넘으면 `429 rotate_limit`).

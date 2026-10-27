@@ -39,10 +39,10 @@ const CACHE_MS = 60_000;
 let warned = false;
 
 /** 폴더의 origin remote (GitHub 만). 실패는 null — 한 번만 stderr 안내. */
-export function detectGithubRemote(cwd) {
+export function detectGithubRemote(cwd, { fresh = false } = {}) {
   if (!cwd) return null;
   const hit = cache.get(cwd);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  if (!fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   let value = null;
   try {
     // core.fsmonitor=false — 폴더의 .git/config 가 지정한 감시 명령을 실행하지 않게(스킬 동기화 훅은 사용자 조작 없이 돈다).

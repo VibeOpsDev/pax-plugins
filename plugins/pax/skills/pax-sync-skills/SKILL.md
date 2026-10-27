@@ -5,14 +5,18 @@ user-invocable: false
 ---
 # PAX 스킬 동기화
 
+**Codex:** PAX 연결은 호스트가 자동 전달하는 현재 채팅의 `threadId`로 선택됩니다. 도구 인자에 채팅 ID를 만들거나 다른 채팅의 값을 넣지 마세요. 연결은 `connect`, 해제는 `disconnect`, 스킬 저장은 `sync_skills` 도구를 사용합니다. `session_required`면 Codex 업데이트·재시작을 안내하고 최근 연결이나 폴더 연결로 우회하지 않습니다. 로컬 파일을 바꾸기 전에는 연결 서비스와 작업 폴더가 맞는지 확인하세요. Claude Code의 기존 호출 방식은 유지합니다.
+
 프로젝트 폴더의 PAX 스킬(`.claude/skills/pax-*`·`.agents/skills/pax-*`)을 PAX에 등록된 최신 내용으로 맞춥니다. 관리자가 끈 스킬은 지워지고, 이 PC 에서 고쳐진 사본은 되돌리기 전에 보관됩니다.
 
 ## 실행
-프로젝트 폴더(git clone 한 폴더)에서:
+Codex는 `sync_skills({projectDir: "<Git 프로젝트 절대 경로>"})`를 호출하고 아래 CLI를 실행하지 않습니다.
+이 채팅의 서비스와 폴더 remote가 같아야 하며 파일은 같은 폴더의 다른 채팅에도 보입니다.
+
+Claude Code는 기존처럼 프로젝트 폴더(git clone 한 폴더)에서:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/vibeagent-sync-skills.mjs" --project-dir "<프로젝트 폴더>"
 ```
-- Codex 에서 두 환경변수가 모두 없으면 **이 SKILL.md 가 있는 폴더 기준 `../../bin/vibeagent-sync-skills.mjs`** 경로를 쓰세요.
 
 ## 결과 전달
 - 출력 마지막 줄(`[스킬 동기화] 추가 n 갱신 m 삭제 k 건너뜀 s`)을 사용자에게 한 줄로 알리세요. `(주의)` 줄이 있으면 함께 전하세요.

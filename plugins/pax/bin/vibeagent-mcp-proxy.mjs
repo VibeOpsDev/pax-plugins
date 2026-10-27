@@ -5,7 +5,7 @@
  * Claude Code 가 이 프로세스를 띄우면, initialize·tools/list 는 **로컬에서 즉시 응답**해
  * 도구가 네이티브로 뜨게 하고(인증 불필요), tools/call 만 **원격 /api/local-ai/mcp 로
  * 토큰을 붙여 전달**한다. 토큰은 /pax-preview:connect 가 저장한 로컬 파일에서 매 호출 읽는다 — 2.0.0 부터 **프로젝트별 파일**
- * (`lib/store.mjs selectToken`: 폴더 remote 가 GitHub 면 그 키만, 아니면 최근 연결·구 단일 파일 순. 구 파일은 첫 `status` 로 repoUrl 을
+ * (`lib/store.mjs selectToken`: GitHub remote 또는 폴더 바인딩으로 선택. Codex 는 호스트 threadId로 채팅별 별도 토큰을 선택. 구 파일은 첫 `status` 로 repoUrl 을
  * 학습해 폴더 remote 와 일치하면 프로젝트 파일로 승격, 불일치면 거부).
  *
  * 왜 이 방식인가: 원격 HTTP MCP + headersHelper 는 Claude Code 이슈 #41690 으로 토큰 주입이
@@ -15,9 +15,15 @@
  */
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { sessionFromMeta, sessionDir, readSessionToken, deleteSessionToken, cancelSessionPending } from './lib/session.mjs';
+import { acquirePendingLock } from './lib/pendingLock.mjs';
+import { isUsable } from './lib/store.mjs';
 import { dirname, resolve } from 'node:path';
 import { selectToken, promoteLegacy, repoUrlToSlug } from './lib/store.mjs';
 import { postJsonRpc, PLUGIN_ID, isDeploymentProtected, DEPLOYMENT_PROTECTED_MESSAGE } from './lib/rpc.mjs';
+import { validateProjectDir } from './lib/projectDir.mjs';
 import { isInsideDir } from './lib/gitRemote.mjs';
 
 if (process.argv.includes('--print-proxy-path')) {
@@ -28,12 +34,16 @@ if (process.argv.includes('--print-proxy-path')) {
 // stdio 모드엔 CLAUDE_CODE_MCP_SERVER_URL 이 없으므로 빌드 시 치환된 URL 을 사용.
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-/** Codex 는 플러그인 루트를 cwd 로 띄운다 — 마켓플레이스 clone 의 remote(`<org>/pax-plugins`)로 토큰이 핀되지 않게 그 안이면 cwd 를 무시(최근 연결 경로). */
+/** 플러그인 자체의 remote 를 프로젝트로 오인하지 않는다. Codex 채팅 모드는 이 폴백을 사용하지 않는다. */
 const cwdForToken = () => (isInsideDir(process.cwd(), PLUGIN_ROOT) ? null : process.cwd());
+
+const REQUIRE_SESSION = process.argv.includes('--require-session');
+const runFile = promisify(execFile);
+const REQUIRE_PROJECT_DIR = process.argv.includes('--require-project-dir');
 
 const PROTOCOL_VERSION = '2025-06-18';
 // version 은 마켓플레이스 배포 시 아래 placeholder 가 실제 버전으로 치환됨(단일 소스: src/lib/pluginVersion.ts).
-const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.1.0' };
+const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.2.1' };
 // 서버가 "이 사용자가 구버전인가"를 알 수 있는 유일한 신호. 서버는 **헤더 부재 = 기능 도입 이전 버전**으로
 // 판정하므로 값이 이상해도 보내는 것 자체는 유지한다(baked 상수라 실패할 수 없다).
 // 비-ASCII/제어문자가 섞이면 fetch 가 TypeError 를 던져 **전 도구 호출이 실패**하므로 필터는 필수.
@@ -46,7 +56,7 @@ const TOOL_LABEL = PLUGIN_ID ? `PAX(${PLUGIN_ID}) · ` : '';
 const NOARGS = { type: 'object', properties: {} };
 const TOOLS = [
   { name: 'status', description: '현재 브리지 연결의 프로젝트·스코프·인프라 준비 상태를 반환합니다.', inputSchema: NOARGS },
-  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값만 반환합니다 — publicKeys(앱 공개 설정값: NEXT_PUBLIC_*/VITE_*·PORTAL_URL·SSO_SERVICE_ID, Supabase 연결 여부와 무관) + Supabase URL·anon key(ready 일 때). service_role·SSO_SECRET 등 비밀 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
+  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값만 반환합니다 — publicKeys(앱 공개 설정값: NEXT_PUBLIC_*/VITE_*·PORTAL_URL·SSO_CLIENT_ID(기존 v1 앱은 SSO_SERVICE_ID), Supabase 연결 여부와 무관) + Supabase URL·anon key(ready 일 때). service_role·SSO_CLIENT_SECRET·SSO_SECRET 등 비밀 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
   { name: 'get_service_role_key', description: '로컬 .env.development.local 용 SUPABASE_SERVICE_ROLE_KEY 를 반환합니다(편집자/소유자 + GitHub 쓰기 권한 필요). 받은 값은 파일에만 기록 — 채팅 출력·커밋 금지.', inputSchema: NOARGS },
   { name: 'get_project_manifest', description: 'clone/로컬 실행에 필요한 repo·브랜치·배포주소(*.vercel.app) 정보를 반환합니다.', inputSchema: NOARGS },
   { name: 'get_project_skills', description: '이 프로젝트 폴더에 놓을 회사·개인 스킬 번들을 반환합니다(read-only). 직접 호출하지 말고 bin/vibeagent-sync-skills.mjs 가 clone 폴더의 .claude/skills/pax-* 에 씁니다.', inputSchema: NOARGS },
@@ -232,7 +242,7 @@ const TOOLS = [
   {
     name: 'get_portal_registration',
     description:
-      '이 프로젝트의 pable studio 서비스 등록 상태와 서비스 ID(SSO 코드의 service/aud 클레임 값)를 조회합니다(read-only). pable studio SSO 연동 코드를 만들기 전, 서비스 ID 가 필요할 때 먼저 호출하세요.',
+      '이 프로젝트의 pable studio 서비스 등록 상태와 서비스 ID(SSO 코드의 service/aud 클레임 값)를 조회합니다(read-only). 로그인 방식(ssoProtocol: v1·v2·아직 미정 null)과 v2 의 client_id 도 알려 줍니다 — pable studio SSO 연동 코드를 만들기 전, 서비스 ID 가 필요할 때 먼저 호출하세요.',
     inputSchema: NOARGS,
   },
   {
@@ -253,7 +263,7 @@ const TOOLS = [
   {
     name: 'request_portal_sso_key',
     description:
-      '이 프로젝트의 pable studio SSO 연동을 켜고(꺼져 있으면 — 한 번 켜면 끌 수 없음) 서명 키 발급을 신청합니다. 사용자 동의를 받은 뒤 enableConfirmed:true 로 호출하세요. 승인은 관리자(사람)가 합니다.',
+      '이 프로젝트의 pable studio SSO 연동을 켜고(꺼져 있으면 — 한 번 켜면 끌 수 없음) 로그인 키(client_id·client secret) 발급을 신청합니다. 사용자 동의를 받은 뒤 enableConfirmed:true 로 호출하세요. 승인은 관리자(사람)가 합니다. 새 신청은 v2 로 정해지고, pable studio가 새 방식을 아직 지원하지 않으면 신청하지 않고 멈춥니다(v2_unavailable). 키 수령 뒤에는 다시 신청하지 않습니다.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -268,13 +278,13 @@ const TOOLS = [
   {
     name: 'claim_portal_sso_key',
     description:
-      '승인된(APPROVED) SSO 키를 수령해 이 프로젝트의 설정값 저장소와 배포(Vercel) 환경에 SSO_SECRET·SSO_SERVICE_ID 로 저장합니다(키 값은 반환되지 않고 로컬 .env 에도 들어가지 않습니다). 수령은 누적 5회 한도이니 재시도 루프 금지.',
+      '승인된(APPROVED) SSO 키를 수령해 이 프로젝트의 설정값 저장소와 배포(Vercel) 환경에 저장합니다 — SSO_CLIENT_ID·SSO_CLIENT_SECRET(기존 v1 등록이면 SSO_SECRET·SSO_SERVICE_ID — 키 값은 반환되지 않고 로컬 .env 에도 들어가지 않습니다). 수령은 누적 5회 한도이니 재시도 루프 금지.',
     inputSchema: {
       type: 'object',
       properties: {
         force: {
           type: 'boolean',
-          description: '이미 SSO_SECRET 이 있어도 새 키로 교체 배선할 때만 true (재발급 승인 완료를 사용자가 명시한 경우)',
+          description: '이미 SSO_CLIENT_SECRET(기존 v1 등록은 SSO_SECRET) 이 있어도 새 키로 교체 배선할 때만 true (재발급 완료를 사용자가 명시한 경우)',
         },
       },
     },
@@ -282,16 +292,69 @@ const TOOLS = [
   { name: 'disconnect', description: '이 프로젝트의 PAX 연결(현재 토큰)을 즉시 취소합니다. /pax-preview:disconnect 가 먼저 이 도구를 호출해 서버에서 취소한 뒤 로컬 토큰 파일을 지웁니다. 다시 쓰려면 /pax-preview:connect.', inputSchema: NOARGS },
 ];
 
+const SESSION_TOOLS = [
+  { name: 'connect', description: '현재 Codex 채팅을 PAX 서비스에 연결합니다. start로 시작해 주소·확인값을 사용자에게 전달하고, 브라우저 연결 후 wait로 완료를 확인하세요. restart는 이 채팅의 대기만 교체합니다. 채팅 ID는 Codex가 자동 전달합니다.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['start', 'wait', 'restart'] } }, required: ['action'], additionalProperties: false } },
+  { name: 'sync_skills', description: '이 채팅의 서비스 스킬을 Git 폴더에 동기화합니다. projectDir는 파일 저장 위치이며 연결 선택에는 쓰지 않습니다. 폴더 remote가 연결 서비스와 같아야 합니다. 같은 폴더의 다른 채팅도 파일을 공유합니다.', inputSchema: { type: 'object', properties: { projectDir: { type: 'string' } }, required: ['projectDir'], additionalProperties: false } },
+];
+async function sessionTool(id, params) {
+  let unlock;
+  try {
+    const sessionId = sessionFromMeta(params?._meta);
+    const args = params?.arguments ?? {};
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('arguments must be an object');
+    if (Object.hasOwn(args, 'sessionId') || Object.hasOwn(args, 'threadId')) throw new Error('채팅 ID는 인자로 지정하지 않습니다.');
+    const name = params?.name;
+    if (![...TOOLS, ...SESSION_TOOLS].some(t => t.name === name)) throw new Error('Unknown tool');
+    if (name === 'connect') {
+      if (!['start', 'wait', 'restart'].includes(args.action) || Object.keys(args).some(k => k !== 'action')) throw new Error('connect action: start | wait | restart');
+      const cliArgs = [resolve(PLUGIN_ROOT, 'bin/vibeagent-connect.mjs'), '--session-id', sessionId];
+      if (args.action === 'wait') cliArgs.push('--wait', '5');
+      if (args.action === 'restart') cliArgs.push('--restart');
+      const { stdout } = await runFile(process.execPath, cliArgs, { cwd: PLUGIN_ROOT, timeout: 45000, maxBuffer: 65536 });
+      return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: stdout }] } });
+    }
+    if (name === 'sync_skills') {
+      const dir = validateProjectDir(args.projectDir, PLUGIN_ROOT);
+      unlock = acquirePendingLock(sessionDir(MCP_URL, sessionId));
+      if (!unlock) throw new Error('connection_busy: 이 채팅의 연결 작업이 진행 중입니다. 다시 시도하세요.');
+      const { stdout } = await runFile(process.execPath, [resolve(PLUGIN_ROOT, 'bin/vibeagent-sync-skills.mjs'), '--session-id', sessionId, '--project-dir', dir], { timeout: 45000, maxBuffer: 65536 });
+      return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: stdout }] } });
+    }
+    // Lock spans token selection and request: disconnect cannot delete a replacement token.
+    unlock = acquirePendingLock(sessionDir(MCP_URL, sessionId));
+    if (!unlock) throw new Error('connection_busy: 이 채팅의 요청이 진행 중입니다. 다시 시도하세요.');
+    const entry = readSessionToken(MCP_URL, sessionId);
+    if (name === 'disconnect') cancelSessionPending(MCP_URL, sessionId);
+    if (!isUsable(entry)) {
+      if (name !== 'disconnect') throw new Error('session_not_connected: 이 채팅은 연결되지 않았거나 만료됐어요. connect 도구로 이 채팅에서 연결하세요.');
+      if (entry) deleteSessionToken(MCP_URL, sessionId);
+      return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '이 채팅의 연결 대기와 만료된 로컬 연결을 정리했어요. 유효한 토큰은 없습니다.' }] } });
+    }
+    const remoteArgs = { ...args };
+    delete remoteArgs.projectDir;
+    // Host metadata stays local: no thread IDs or session data sent to the PAX server.
+    const { status, data } = await postJsonRpc(MCP_URL, entry.token, { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: remoteArgs } }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 120000 });
+    if (isDeploymentProtected(status, data)) throw new Error(DEPLOYMENT_PROTECTED_MESSAGE);
+    if (status === 401 && name === 'disconnect') {
+      deleteSessionToken(MCP_URL, sessionId);
+      return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '이미 만료/취소된 이 채팅의 연결을 정리했어요.' }] } });
+    }
+    if (status !== 200 || !data?.result) throw new Error(status === 401 ? '이 채팅의 연결이 만료/취소됐어요. connect로 다시 연결하세요.' : `PAX 요청 실패 (HTTP ${status}). 연결 해제 실패 시 토큰은 유지됩니다.`);
+    if (name === 'disconnect' && !data.result.isError) deleteSessionToken(MCP_URL, sessionId);
+    return send({ jsonrpc: '2.0', id, result: data.result });
+  } catch (e) { return errorResult(id, String(e.stderr || e.message).slice(0, 2000)); }
+  finally { unlock?.(); }
+}
+
 /** 토큰 선택 — { token, sel } | { token:null, message }. 레거시 단일 파일은 폴더 remote 와 대조 후 승격. */
-let legacyMismatch = false; // 서버가 200 으로 돌려준 repoUrl 이 폴더 remote 와 **확인된** 불일치일 때만 잠근다(네트워크 오류·타임아웃은 다음 호출에 재시도).
-async function readToken() {
-  const sel = selectToken({ mcpUrl: MCP_URL, cwd: cwdForToken(), projectDirHint: process.env.CLAUDE_PROJECT_DIR });
+async function readToken(projectDir) {
+  const sel = selectToken({ mcpUrl: MCP_URL, cwd: projectDir ?? cwdForToken(),
+    projectDirHint: projectDir ? undefined : process.env.CLAUDE_PROJECT_DIR, fresh: !!projectDir });
   if (sel.kind === 'project' || sel.kind === 'folder' || sel.kind === 'recent') return { token: sel.entry.token, sel };
   if (sel.kind === 'legacy') {
     // 구 파일은 repoUrl 을 모른다 — 첫 호출 때 status 로 학습해 폴더 remote 와 대조(remote 없으면 최근 연결로 그대로 사용).
     if (!sel.remote) return { token: sel.entry.token, sel };
     const mismatch = `지금 폴더(${sel.remote})는 이전 연결과 다른 프로젝트예요. /pax-preview:connect 로 이 프로젝트를 연결하세요.`;
-    if (legacyMismatch) return { token: null, message: mismatch };
     try {
       const { status, data } = await postJsonRpc(MCP_URL, sel.entry.token, { jsonrpc: '2.0', id: 'legacy-status', method: 'tools/call', params: { name: 'status', arguments: {} } }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 15_000 });
       if (isDeploymentProtected(status, data)) return { token: null, message: DEPLOYMENT_PROTECTED_MESSAGE };
@@ -302,7 +365,6 @@ async function readToken() {
           promoteLegacy(MCP_URL, sel.entry, repoUrl);
           return { token: sel.entry.token, sel };
         }
-        legacyMismatch = true;
         return { token: null, message: mismatch };
       }
     } catch { /* 아래 안내 — 잠그지 않는다 */ }
@@ -331,7 +393,17 @@ function errorResult(id, text) {
 }
 
 async function forwardToolCall(id, params) {
-  const { token, message } = await readToken();
+  if (REQUIRE_SESSION) return sessionTool(id, params);
+  let projectDir;
+  const args = params?.arguments ?? {};
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return errorResult(id, 'arguments must be an object');
+  try {
+    if (REQUIRE_PROJECT_DIR || Object.hasOwn(args, 'projectDir')) projectDir = validateProjectDir(args.projectDir, PLUGIN_ROOT);
+  } catch (e) { return errorResult(id, e.message); }
+  const remoteArgs = { ...args };
+  delete remoteArgs.projectDir;
+  params = { ...params, arguments: remoteArgs };
+  const { token, message } = await readToken(projectDir);
   if (!token) return errorResult(id, message);
   try {
     const { status, data } = await postJsonRpc(MCP_URL, token, { jsonrpc: '2.0', id, method: 'tools/call', params }, { pluginVersion: PLUGIN_VERSION_VALUE, timeoutMs: 120_000 });
@@ -386,7 +458,11 @@ rl.on('line', (line) => {
         },
       });
     case 'tools/list':
-      return send({ jsonrpc: '2.0', id, result: { tools: TOOL_LABEL ? TOOLS.map((t) => ({ ...t, description: TOOL_LABEL + t.description })) : TOOLS } });
+      return send({ jsonrpc: '2.0', id, result: { tools: (REQUIRE_SESSION ? [...TOOLS, ...SESSION_TOOLS] : TOOLS).map((t) => ({ ...t, description: TOOL_LABEL + t.description,
+        inputSchema: REQUIRE_PROJECT_DIR ? { ...t.inputSchema, properties: { ...t.inputSchema.properties,
+          projectDir: { type: 'string', description: '현재 대화의 프로젝트 폴더 절대 경로. 플러그인 폴더 사용 금지.' } },
+          required: [...(t.inputSchema.required ?? []), 'projectDir'] } : t.inputSchema,
+      })) } });
     case 'tools/call':
       return void forwardToolCall(id, params);
     case 'ping':

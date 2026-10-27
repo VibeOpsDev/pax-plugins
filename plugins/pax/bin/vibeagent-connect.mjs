@@ -16,18 +16,22 @@
  * `--restart` 는 살아있는 대기를 종료하고 새로 시작. 인자는 무시한다(옛 `<코드>` 형식이면 한 줄 안내). `--print-proxy-path` 는 Codex 예비 절차용.
  */
 import { spawnSync, spawn } from 'node:child_process';
-import { existsSync, readdirSync, unlinkSync, statSync, openSync, closeSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, unlinkSync, statSync, openSync, closeSync, mkdirSync, writeFileSync } from 'node:fs';
 import { platform, release } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { instanceDir, readJson, readProjectToken, readRecent, readLegacy, listProjectTokens, repoUrlToSlug, isUsable, isValidRepoSlug, selectToken, deleteProjectToken, readFolderBinding, writeFolderBinding, deleteFolderBinding, deleteDeploymentBypass } from './lib/store.mjs';
+import { readJson, readProjectToken, readRecent, readLegacy, listProjectTokens, repoUrlToSlug, isUsable, isValidRepoSlug, selectToken, deleteProjectToken, readFolderBinding, writeFolderBinding, deleteFolderBinding, deleteDeploymentBypass } from './lib/store.mjs';
 import { detectGithubRemote, isInsideDir } from './lib/gitRemote.mjs';
 import { connectPreflight } from './lib/rpc.mjs';
+import { pendingDir, writeJsonAtomic } from './lib/store.mjs';
+import { projectDirArgument, validateProjectDir } from './lib/projectDir.mjs';
+import { validateSessionId, sessionDir, readSessionToken, deleteSessionToken, hasSessionTokens } from './lib/session.mjs';
+import { acquirePendingLock } from './lib/pendingLock.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
 /** 배포 시 서버가 치환(미치환 개발본이면 연결 전 확인을 건너뛴다 — `connectPreflight` 가 형식으로 거른다). */
-const PLUGIN_VERSION = '2.1.0';
+const PLUGIN_VERSION = '2.2.1';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(HERE, '..');
 /**
@@ -44,16 +48,57 @@ const PENDING_MAX_AGE_MS = 10 * 60_000;
 const STARTING_GRACE_MS = 15_000;
 
 // 플러그인 설치 폴더 안(Codex 는 플러그인 루트를 cwd 로 띄운다)이면 그 폴더의 remote(마켓플레이스 clone)는 프로젝트가 아니다.
-const cwd = isInsideDir(process.cwd(), PLUGIN_ROOT) ? null : process.cwd();
-const projectDirHint = process.env.CLAUDE_PROJECT_DIR && !isInsideDir(process.env.CLAUDE_PROJECT_DIR, PLUGIN_ROOT) ? process.env.CLAUDE_PROJECT_DIR : undefined;
+const sessionArg = process.argv.indexOf('--session-id');
+let sessionId = null;
+try { if (sessionArg >= 0) sessionId = validateSessionId(process.argv[sessionArg + 1]); }
+catch (e) { process.stderr.write(`${e.message}\n`); process.exit(2); }
+let explicitDir;
+try { explicitDir = projectDirArgument(process.argv, PLUGIN_ROOT); }
+catch (e) { process.stderr.write(`${e.message}\n`); process.exit(2); }
+const cwd = explicitDir ?? (isInsideDir(process.cwd(), PLUGIN_ROOT) ? null : process.cwd());
+const projectDirHint = !explicitDir && process.env.CLAUDE_PROJECT_DIR && !isInsideDir(process.env.CLAUDE_PROJECT_DIR, PLUGIN_ROOT) ? process.env.CLAUDE_PROJECT_DIR : undefined;
+const scopeDir = cwd ?? projectDirHint;
+const dir = sessionId ? sessionDir(MCP_URL, sessionId) : pendingDir(MCP_URL, scopeDir);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const remove = (p) => { try { unlinkSync(p); } catch { /* ignore */ } };
 
 if (process.argv.includes('--print-proxy-path')) {
   process.stdout.write(`${join(HERE, 'vibeagent-mcp-proxy.mjs')}\n`);
   process.exit(0);
 }
+if (!scopeDir && !sessionId) {
+  process.stderr.write('projectDir: --project-dir <현재 프로젝트 절대 경로>가 필요합니다.\n');
+  process.exit(2);
+}
+// Serialize startup/restart/disconnect within one folder; other folders use different locks.
+let unlock = acquirePendingLock(dir);
+function releaseLock() {
+  unlock?.();
+  unlock = null;
+}
+if (!unlock) {
+  process.stderr.write('connection_busy: 이 폴더의 연결 명령이 실행 중입니다. 잠시 후 다시 실행하세요.\n');
+  process.exit(2);
+}
+process.on('exit', releaseLock);
 // `/pax-preview:disconnect` — 로컬 토큰 파일만 삭제(서버 취소는 명령이 먼저 `disconnect` 도구로 한다).
 if (process.argv.includes('--disconnect')) {
-  const sel = selectToken({ mcpUrl: MCP_URL, cwd, projectDirHint });
+  // Cancel only this folder's pending requests, including a listener still starting.
+  if (existsSync(dir)) {
+    for (const name of readdirSync(dir)) {
+      if (!/^pending-.*\.json$/.test(name)) continue;
+      const path = join(dir, name);
+      writeFileSync(`${path}.cancelled`, '', { mode: 0o600 });
+      await stopListener(readJson(path), path);
+      remove(path);
+    }
+  }
+  if (sessionId) {
+    deleteSessionToken(MCP_URL, sessionId);
+    process.stdout.write('이 채팅의 연결을 정리했어요.\n');
+    process.exit(0);
+  }
+  const sel = selectToken({ mcpUrl: MCP_URL, cwd, projectDirHint, fresh: !!explicitDir });
   if (cwd) deleteFolderBinding(MCP_URL, cwd); // 이 폴더의 바인딩도 함께 — 다음 도구 호출이 "미연결" 로 답하게
   if (sel.slug) {
     deleteProjectToken(MCP_URL, sel.slug);
@@ -62,11 +107,11 @@ if (process.argv.includes('--disconnect')) {
     process.stdout.write('이 폴더에 연결된 프로젝트 토큰이 없어요.\n');
   }
   // 이 인스턴스에 남은 연결이 없으면 배포 보호 우회 값(프리뷰)도 지운다 — 다음 연결이 서버에서 다시 받는다.
-  if (listProjectTokens(MCP_URL).length === 0) deleteDeploymentBypass(MCP_URL);
+  if (listProjectTokens(MCP_URL).length === 0 && !hasSessionTokens(MCP_URL)) deleteDeploymentBypass(MCP_URL);
   process.exit(0);
 }
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-if (positional[0] && /^[A-Za-z0-9_-]{16,}$/.test(positional[0])) {
+if (!sessionId && positional[0] && /^[A-Za-z0-9_-]{16,}$/.test(positional[0])) {
   process.stdout.write('2.0 부터 연결 코드 붙여넣기는 없어졌어요 — 인자 없이 진행합니다(브라우저에서 프로젝트를 고르면 연결돼요).\n');
 }
 // 기본 = 기다리지 않음(주소·확인값을 곧바로 돌려준다). `--wait [초]` 일 때만 폴링. 구 `--no-wait` 는 무해한 no-op.
@@ -74,10 +119,7 @@ const wait = process.argv.includes('--wait');
 const restart = process.argv.includes('--restart');
 
 
-const dir = instanceDir(MCP_URL);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const remove = (p) => { try { unlinkSync(p); } catch { /* ignore */ } };
-const remote = (cwd ? detectGithubRemote(cwd) : null) ?? (projectDirHint && projectDirHint !== cwd ? detectGithubRemote(projectDirHint) : null);
+const remote = sessionId ? null : (cwd ? detectGithubRemote(cwd, { fresh: !!explicitDir }) : null) ?? (projectDirHint && projectDirHint !== cwd ? detectGithubRemote(projectDirHint) : null);
 
 // ── 1) 진행 상태 파일 점검 — done 소비 / 살아있는 대기 이어 붙기 / 나머지 정리 ─────────────────────────────────────
 let attachPath = null;
@@ -102,7 +144,10 @@ if (existsSync(dir)) {
     const isLive = fresh && notExpired && (st?.status === 'waiting' || st?.status === 'exchanging' || (st?.status === 'starting' && e.age <= STARTING_GRACE_MS));
     if (!restart && fresh && st?.status === 'done' && !done) { done = e; continue; }
     if (!restart && isLive && !live) { live = e; continue; }
-    if (restart && isLive && st.status !== 'starting') await stopListener(st);
+    if (restart && isLive) {
+      writeFileSync(`${e.path}.cancelled`, '', { mode: 0o600 });
+      await stopListener(st, e.path);
+    }
     if (!restart && fresh && st?.status === 'failed' && st.message) process.stdout.write(`이전 연결 시도가 실패했어요(${String(st.message).slice(0, 200)}) — 새로 시작합니다.\n`);
     remove(e.path);
   }
@@ -133,6 +178,7 @@ if (attachPath) {
       (url ? `${checkValueLine(url)}\n` : ''),
     );
     if (!wait) process.exit(0);
+    releaseLock();
     await waitLoop(attachPath); // exit
   }
   if (st && st.status === 'done') consumeDone(st, attachPath); // exit 0
@@ -147,21 +193,25 @@ if (attachPath) {
 let hintSlug = remote?.slug ?? null; // 강한 힌트
 let recentSlug = null; // 약한 힌트
 let previousJti = null;
-if (hintSlug) {
+if (sessionId) {
+  const previous = readSessionToken(MCP_URL, sessionId);
+  recentSlug = previous ? repoUrlToSlug(previous.repoUrl) : null;
+  previousJti = previous?.jti ?? null;
+} else if (hintSlug) {
   previousJti = readProjectToken(MCP_URL, hintSlug)?.jti ?? null;
 } else {
   // 이 폴더에서 전에 연결한 프로젝트(폴더 바인딩) > 인스턴스 전체의 최근 연결 — 둘 다 약한 힌트(선택만).
   const bound = cwd ? readFolderBinding(MCP_URL, cwd) : null;
-  const recent = bound ?? readRecent(MCP_URL); // slug 형식이 깨진 recent.json 은 null
+  const recent = bound ?? (scopeDir ? null : readRecent(MCP_URL));
   if (recent?.slug) { recentSlug = recent.slug; previousJti = readProjectToken(MCP_URL, recent.slug)?.jti ?? null; }
-  else {
+  else if (!scopeDir) {
     const latest = listProjectTokens(MCP_URL).sort((a, b) => b.mtime - a.mtime)[0];
     if (latest?.repoUrl) { recentSlug = repoUrlToSlug(latest.repoUrl); previousJti = latest.jti ?? null; }
   }
 }
 if (hintSlug && !isValidRepoSlug(hintSlug)) hintSlug = null;
 if (recentSlug && !isValidRepoSlug(recentSlug)) recentSlug = null;
-if (!previousJti) {
+if (!sessionId && !previousJti && !scopeDir) {
   const legacy = readLegacy(MCP_URL);
   if (isUsable(legacy) && legacy.jti) previousJti = legacy.jti;
 }
@@ -200,9 +250,12 @@ if (!isConnectUrl(urlTemplate.replace('{port}', '1'))) {
     logFd = openSync(logPath, 'a', 0o600);
   } catch { logFd = 'ignore'; }
   const args = [listener, '--spawn', '--nonce', nonce, '--state', statePath, '--exp', String(exp), '--url', urlTemplate];
+  if (sessionId) args.push('--session-id', sessionId);
+  if (explicitDir && !sessionId) args.push('--project-dir', explicitDir, '--expected-repo', remote?.slug ?? '-');
   if (previousJti) args.push('--previous-jti', previousJti);
   // remote 없는 폴더(빈 폴더·remote 없는 저장소)만 — 교환 성공 시 리스너가 이 폴더 ↔ 고른 프로젝트를 묶는다. remote 폴더는 remote 핀이라 불필요.
-  if (cwd && !remote?.slug) args.push('--bind-dir', cwd);
+  if (!sessionId && cwd && !remote?.slug) args.push('--bind-dir', cwd);
+  writeJsonAtomic(statePath, { status: 'starting', exp, started: Date.now(), projectDir: explicitDir, expectedRepo: remote?.slug ?? null });
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', logFd, logFd], windowsHide: true, env: process.env });
   child.unref();
   if (typeof logFd === 'number') { try { closeSync(logFd); } catch { /* ignore */ } }
@@ -229,6 +282,7 @@ if (!isConnectUrl(urlTemplate.replace('{port}', '1'))) {
 
 // ── 7) 대기 ────────────────────────────────────────────────────────────────────────────────────────────────
 if (!wait) process.exit(0);
+releaseLock();
 await waitLoop(statePath);
 
 // ─── helpers ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -246,28 +300,44 @@ function checkValueLine(url) {
 }
 
 /** `--restart` 전용 — exp 미도래·waiting/exchanging 인 리스너만 SIGTERM. POSIX 에선 그 pid 가 우리 리스너인지 ps 로 한 번 더 확인. */
-async function stopListener(st) {
+async function stopListener(st, path) {
   const pid = Number(st?.pid);
   if (!Number.isInteger(pid) || pid <= 1) return;
   if (platform() !== 'win32') {
     try {
       const r = spawnSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
-      if (!r.error && r.status === 0 && !String(r.stdout ?? '').includes('vibeagent-connect-listener')) return; // 다른 프로세스(pid 재사용)
-    } catch { /* ps 없음 — exp 게이트만으로 진행 */ }
+      if (r.error || r.status !== 0 || !String(r.stdout ?? '').includes('vibeagent-connect-listener') || !String(r.stdout ?? '').includes(path)) return;
+    } catch { return; /* PID 소유권을 확인하지 못하면 취소 마커만 사용 */ }
   }
   try { process.kill(pid, 'SIGTERM'); } catch { /* 이미 없음 */ }
   await sleep(200); // 리스너가 상태 파일에 failed(superseded) 를 쓰고 끝날 시간
 }
 
 function consumeDone(st, path) {
+  unlock ??= acquirePendingLock(dir);
+  if (!unlock || existsSync(`${path}.cancelled`)) {
+    process.stderr.write('connection_busy: 연결 결과가 취소됐거나 다른 연결 명령이 실행 중입니다. 다시 확인하세요.\n');
+    process.exit(2);
+  }
+  if (explicitDir && !sessionId) {
+    try {
+      validateProjectDir(explicitDir, PLUGIN_ROOT);
+      if (st.projectDir !== explicitDir || (detectGithubRemote(explicitDir, { fresh: true })?.slug ?? null) !== st.expectedRepo) throw new Error('폴더의 remote 가 연결 시작 때와 달라졌어요. 다시 연결하세요.');
+    } catch (e) { remove(path); process.stderr.write(`${e.message}\n`); process.exit(2); }
+  }
+  if (sessionId && st.sessionId !== sessionId) { process.stderr.write('session_mismatch\n'); process.exit(2); }
   const repoUrl = st.result?.repoUrl ?? '';
   remove(path);
   process.stdout.write(`PAX 연결 완료: ${repoUrl}\n`);
+  if (sessionId) {
+    process.stdout.write('이 채팅에만 연결됐어요. 폴더 파일과 스킬은 다른 채팅과 공유되므로 자동으로 변경하지 않습니다.\n');
+    process.exit(0);
+  }
   const connectedSlug = repoUrlToSlug(repoUrl);
   // 폴더 바인딩 — remote 가 없거나 연결 프로젝트와 같을 때만 이 폴더 ↔ 프로젝트를 묶는다(프록시가 이 폴더에서 이 토큰만 쓴다).
   // 정본 기록은 리스너(`--bind-dir`, 교환 성공 시점)이고 여기는 멱등 보조 — done 을 늦게 소비해도 같은 값.
   // remote 가 다른 프로젝트면 묶지 않는다(remote 가 우선이고, 아래 안내대로 사용자가 폴더를 고른다).
-  if (cwd && connectedSlug && (!remote?.slug || remote.slug === connectedSlug)) {
+  if (!explicitDir && cwd && connectedSlug && (!remote?.slug || remote.slug === connectedSlug)) {
     try { writeFolderBinding(MCP_URL, cwd, { slug: connectedSlug, repoUrl }); } catch { /* 바인딩 실패는 치명 아님 — 다음 호출이 미연결로 안내 */ }
   }
   if (remote?.slug && connectedSlug && remote.slug !== connectedSlug) {
@@ -310,6 +380,7 @@ async function waitLoop(path) {
 }
 
 function openBrowser(url) {
+  if (process.argv.includes('--no-browser')) return true;
   try {
     const isWsl = platform() === 'linux' && (process.env.WSL_DISTRO_NAME || /microsoft/i.test(release()));
     let cmd, args;

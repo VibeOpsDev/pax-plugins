@@ -4,6 +4,8 @@ description: "PAX(preview) · 로컬 .env의 비밀 취급 안전 규칙. PAX �
 ---
 # 비밀 안전 규칙 (항상 적용)
 
+**Codex:** PAX 연결은 호스트가 자동 전달하는 현재 채팅의 `threadId`로 선택됩니다. 도구 인자에 채팅 ID를 만들거나 다른 채팅의 값을 넣지 마세요. 연결은 `connect`, 해제는 `disconnect`, 스킬 저장은 `sync_skills` 도구를 사용합니다. `session_required`면 Codex 업데이트·재시작을 안내하고 최근 연결이나 폴더 연결로 우회하지 않습니다. 로컬 파일을 바꾸기 전에는 연결 서비스와 작업 폴더가 맞는지 확인하세요. Claude Code의 기존 호출 방식은 유지합니다.
+
 - `.env*` 파일의 **내용을 출력/표시하지 마세요**(`cat`/`echo`/`grep` 등으로 값 노출 금지). 키의 존재 여부만 언급. (파일로 **기록**하는 것은 허용 — 화면에 **표시**하는 것만 금지.)
 - 토큰·GitHub 로그인 정보를 채팅에 붙여넣지 마세요(연결은 `/pax-preview:connect` — 코드 없음).
 - 로컬 `.env.development.local`에 `SUPABASE_SERVICE_ROLE_KEY`가 있는 것은 정상일 수 있습니다(편집자/소유자 기본 흐름). 이 키를 **새로 얻는 경로는 오직 MCP `get_service_role_key`** — 사용자에게 값을 물어보거나 다른 곳에서 복사해오게 하지 마세요. 항상: (1) 값을 채팅·로그·코드에 출력 금지 — 파일에만 존재 (2) 커밋 금지 — 커밋 전 `git status`로 확인(파일명만 보여 안전). `.env` 파일이 목록에 보이면 그 상태로 `git add .`·`git diff`를 실행하지 말고, `.gitignore`에 `.env*` 추가(스테이징됐다면 `git restore --staged`, 추적 중이면 `git rm --cached`) 후 진행 (3) `SUPABASE_DB_URL`/`db_password`가 보이면 **여전히 즉시 중단하고 사용자에게 알리세요**(정상 흐름에선 절대 내려오지 않습니다).

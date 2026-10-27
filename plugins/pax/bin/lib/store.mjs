@@ -1,14 +1,14 @@
 /**
  * 토큰 파일 저장소 — 프록시·연결·동기화 공용 (2.0.0).
  *
- * 레이아웃: `~/.config/vibeagent/<instanceKey>/<owner--name>.json`(프로젝트별) + `recent.json`(최근 연결) + `pending-*.json`(연결 진행 상태)
+ * 레이아웃: `~/.config/vibeagent/<instanceKey>/<owner--name>.json`(프로젝트별) + `recent.json`(최근 연결) + `pending/<scope>/pending-*.json`(대기)
  *   + `deployment-bypass.json`(프리뷰 인스턴스의 배포 보호 우회 값 — 서버가 연결 시 준 것, origin 고정).
  * instanceKey = sha256(MCP URL)[:16](1.x 와 동일 — 인스턴스 구분). 구 1.x 단일 파일 `~/.config/vibeagent/<instanceKey>.json` 은
  * **승격** 대상(JWT payload 무검증 디코드로 jti·repo_url_hash 만 얻고, 프록시가 첫 `status` 로 repoUrl 을 학습해 이관).
  *
  * 선택 규칙(`selectToken`): 폴더 remote 가 GitHub 로 해석되면 **그 키 파일만** 후보(없음·만료 = 재연결 안내, recent 폴백 금지 —
- * A 폴더에서 A 만료 시 B 토큰으로 쓰기 도구가 B 에 나가면 안 된다). recent/legacy 는 remote 가 없거나 GitHub 외 호스트일 때만
- * (Codex 플러그인 설치 폴더·비저장소 폴더). `process.cwd()` 1순위, `CLAUDE_PROJECT_DIR` 은 cwd 에 remote 가 없을 때만.
+ * A 폴더에서 A 만료 시 B 토큰으로 쓰기 도구가 B 에 나가면 안 된다). remote 없는 폴더는 바인딩만, 폴더 정보가 전혀 없는 기존
+ * 호출만 recent/legacy 를 허용한다. Codex 채팅 연결은 lib/session.mjs의 별도 토큰 저장소를 사용하며 이 선택기로 폴백하지 않는다.
  * 만료 판정은 `expiresAt + 60s` 까지 시도하고 서버 401 을 권위로 둔다.
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs';
@@ -170,17 +170,17 @@ export function promoteLegacy(mcpUrl, legacyEntry, repoUrl) {
 }
 
 /**
- * 폴더 바인딩 — `folders.json`: { [폴더 realpath]: { slug, repoUrl, at } }. remote 가 없는 폴더(빈 폴더·상위 폴더)에서 연결이 끝나면
+ * 폴더 바인딩 — `folders/<hash>.json`: { slug, repoUrl, at } (기존 folders.json 읽기 호환). remote 없는 폴더에서 연결이 끝나면
  * connect 스크립트가 기록하고, 프록시는 그 폴더에서만 그 프로젝트를 쓴다.
  * 2026-09-21: remote 없는 폴더가 전역 recent.json 을 보던 탓에 세션 두 개(빈 폴더 A·B)가 마지막 연결 프로젝트를 서로 공유해
- * B 세션이 A 프로젝트로 환경을 만들던 문제. recent 는 이제 cwd 가 없는 호출(Codex — 플러그인 폴더 실행)에만 쓴다.
+ * B 세션이 A 프로젝트로 환경을 만들던 문제. Codex 채팅 연결은 이 폴더 바인딩과 독립적이다.
  */
 export function foldersPath(mcpUrl) {
   return join(instanceDir(mcpUrl), 'folders.json');
 }
 export function folderKey(dir) {
   // git 안이면 최상위 폴더로 정규화 — Bash 도구의 cwd 는 이전 `cd` 가 유지되므로 하위 폴더에서 연결이 끝나도 프록시(프로젝트 루트 cwd)와 같은 키를 본다.
-  // 여기 오는 git 저장소는 remote 없는 것뿐(remote 가 있으면 selectToken 이 앞서 remote 로 핀). 비-git 폴더는 realpath 그대로.
+  // pending scope 도 같은 키를 쓴다. 비-git 폴더는 realpath 그대로.
   const base = repoToplevel(dir) ?? dir;
   try { return realpathSync(base); } catch { return resolve(base); }
 }
@@ -188,39 +188,40 @@ function readFolders(mcpUrl) {
   const j = readJson(foldersPath(mcpUrl));
   return j && typeof j === 'object' && !Array.isArray(j) ? j : {};
 }
+/** Separate files prevent lost updates across folders; tombstones mask legacy bindings. */
+function bindingPath(mcpUrl, dir) {
+  return join(instanceDir(mcpUrl), 'folders', instanceKey(folderKey(dir)) + '.json');
+}
+export function pendingDir(mcpUrl, dir) {
+  return dir ? join(instanceDir(mcpUrl), 'pending', instanceKey(folderKey(dir))) : instanceDir(mcpUrl);
+}
 export function readFolderBinding(mcpUrl, dir) {
   if (!dir) return null;
-  const b = readFolders(mcpUrl)[folderKey(dir)];
+  const path = bindingPath(mcpUrl, dir);
+  const b = existsSync(path) ? readJson(path) : readFolders(mcpUrl)[folderKey(dir)];
   return b && isValidRepoSlug(b.slug) ? b : null;
 }
 export function writeFolderBinding(mcpUrl, dir, { slug, repoUrl }) {
-  // 읽기-수정-쓰기(파일 교체는 원자) — 두 연결이 같은 순간에 끝나면 한쪽 항목이 밀릴 수 있다(확률 극히 낮음, 재연결로 복구). 락은 두지 않는다.
   if (!dir || !isValidRepoSlug(slug)) return false;
-  const all = readFolders(mcpUrl);
-  all[folderKey(dir)] = { slug, repoUrl, at: new Date().toISOString() };
-  writeJsonAtomic(foldersPath(mcpUrl), all);
+  writeJsonAtomic(bindingPath(mcpUrl, dir), { slug, repoUrl, at: new Date().toISOString() });
   return true;
 }
 export function deleteFolderBinding(mcpUrl, dir) {
   if (!dir) return false;
-  const all = readFolders(mcpUrl);
-  const key = folderKey(dir);
-  if (!(key in all)) return false;
-  delete all[key];
-  writeJsonAtomic(foldersPath(mcpUrl), all);
+  writeJsonAtomic(bindingPath(mcpUrl, dir), null);
   return true;
 }
 
 /**
  * 어느 토큰을 쓸지 — { kind: 'project'|'folder'|'recent'|'legacy'|'none', entry, slug, remote, reason }.
  * 순서: ① 폴더 remote(GitHub) → 그 프로젝트 파일만 ② remote 없는 폴더 → **폴더 바인딩**(없으면 `none`/`no_folder_binding` — 다른 폴더의
- * 연결로 새지 않는다) ③ cwd 자체가 없는 호출(Codex 플러그인 폴더) → 최근 연결(recent) → 구 단일 파일.
+ * 연결로 새지 않는다) ③ 폴더 정보 없는 기존 호출 → 최근 연결(recent) → 구 단일 파일. Codex 채팅 모드에서는 이 선택기를 사용하지 않는다.
  * `remote` 는 폴더에서 해석된 GitHub slug(없으면 null) — 호출자가 "지금 폴더 ≠ 연결 프로젝트" 안내에 쓴다.
  */
-export function selectToken({ mcpUrl, cwd, projectDirHint }) {
+export function selectToken({ mcpUrl, cwd, projectDirHint, fresh = false }) {
   // cwd 는 null 허용 — 호출자가 "이 폴더의 remote 는 보지 말라"(플러그인 설치 폴더 등)고 할 때.
-  let remote = cwd ? detectGithubRemote(cwd) : null;
-  if (!remote && projectDirHint && projectDirHint !== cwd) remote = detectGithubRemote(projectDirHint);
+  let remote = cwd ? detectGithubRemote(cwd, { fresh }) : null;
+  if (!remote && projectDirHint && projectDirHint !== cwd) remote = detectGithubRemote(projectDirHint, { fresh });
   const slug = remote?.slug ?? null;
   if (slug) {
     const entry = readProjectToken(mcpUrl, slug);
@@ -258,7 +259,10 @@ export function listProjectTokens(mcpUrl) {
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.json') || name === 'recent.json' || name.startsWith('pending-')) continue;
     const entry = readJson(join(dir, name));
-    if (entry?.repoUrl) out.push({ file: join(dir, name), ...entry, mtime: statSync(join(dir, name)).mtimeMs });
+    if (entry?.repoUrl) {
+      try { out.push({ file: join(dir, name), ...entry, mtime: statSync(join(dir, name)).mtimeMs }); }
+      catch { /* another folder may disconnect between read and stat */ }
+    }
   }
   return out;
 }

@@ -7,11 +7,32 @@ user-invocable: false
 
 연결 코드는 더 이상 없습니다. 스크립트가 이 PC 에 대기 프로세스를 띄우고 브라우저를 열며, 사용자가 브라우저에서 PAX 에 로그인해 프로젝트를 고르고 [연결]을 누르면 연결됩니다(신원 증명 = PAX 로그인, 코드는 같은 PC 로만 이동). 사용자가 코드를 붙여넣어도 **무시**하세요. GitHub CLI 는 연결에 필요 없고, clone/push 단계(`pax-local-setup`)에서만 필요합니다.
 
-## 1. 연결 스크립트 실행 (인자 없이)
+## Codex 채팅별 연결
+
+Codex에서는 아래 CLI를 직접 실행하지 않고 PAX MCP `connect` 도구를 사용합니다.
+호스트의 `_meta.threadId`를 프록시가 읽으므로 사용자나 에이전트가 ID를 입력할 필요가 없습니다.
+
+1. `connect({action: "start"})`를 호출하고 출력의 연결 주소와 확인값을 사용자에게 그대로 전달합니다.
+2. 사용자가 브라우저에서 프로젝트를 선택하고 연결하면 `connect({action: "wait"})`로 완료를 확인합니다.
+   `waiting:`이면 반복하되 최대 20회 후 사용자에게 브라우저 연결 완료를 요청합니다.
+3. 새로 시작하려면 `connect({action: "restart"})`. 다른 채팅의 대기는 유지됩니다.
+4. 완료 후 `status({})`로 연결 서비스를 확인합니다. 로컬 개발 준비는 실제 작업 폴더와 repoUrl을 대조한 뒤 진행합니다.
+   같은 폴더의 다른 채팅도 파일을 공유하므로 연결만으로 clone·환경변수·스킬 파일을 자동 변경하지 않습니다.
+5. 스킬 저장은 `sync_skills({projectDir: "<Git 프로젝트 절대 경로>"})`를 사용합니다.
+   연결 서비스와 폴더 remote가 다르면 저장이 거절됩니다. 이 경로는 파일 저장 위치이며 연결 선택 키가 아닙니다.
+6. 해제는 `disconnect({})` 한 번으로 이 채팅의 서버 토큰·로컬 토큰·대기를 정리합니다. CLI 해제를 추가 실행하지 않습니다.
+
+`session_required`는 호스트 ID가 없는 경우입니다. Codex 업데이트·재시작을 안내하고 멈추세요.
+`session_not_connected`는 이 채팅에서 연결이 필요하다는 뜻입니다. 다른 채팅·폴더·최근 연결로 우회하지 않습니다.
+`connection_busy`는 같은 채팅의 요청이 진행 중이라는 뜻이므로 완료 후 재시도합니다.
+`plugin_reinstall_required`는 출력 안내대로 재설치가 필요하며 재시도 루프를 돌리지 않습니다.
+
+Claude Code는 아래 기존 CLI와 cwd/`CLAUDE_PROJECT_DIR` 동작을 유지합니다.
+
+## 1. Claude Code 연결 스크립트 실행
 ```bash
 node "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/vibeagent-connect.mjs"
 ```
-- Codex 에서 두 환경변수가 모두 없으면 **이 SKILL.md 가 있는 폴더 기준 `../../bin/vibeagent-connect.mjs`** 경로를 쓰세요.
 - 이 스크립트는 **기다리지 않고 바로 끝납니다**(대기 프로세스 기동 + 브라우저 열기 + 주소·확인값 출력). 출력을 **먼저 사용자에게 전달**한 뒤에 기다리세요.
 - **종료 5**(`plugin_reinstall_required:` 줄 — 첫 실행이든 `--wait` 실행이든) → 새 연결은 시작되지 않았습니다(서버가 이 설치본은 재설치가 필요하다고 판정). **`[사용자 안내 시작]`~`[사용자 안내 끝]`** 사이 내용만 그대로 전달하고 멈추세요 — `--wait` 를 포함해 다시 실행하거나 재설치를 대신 실행하지 마세요.
 - 출력 **`브라우저에서 연결을 진행하세요: <주소>`** → 사용자에게 "브라우저에서 프로젝트를 고르고 [연결]을 눌러 주세요. 브라우저가 안 열렸으면 주소를 `#` 뒤까지 복사해 **이 PC** 의 브라우저에서 여세요" 라고 한 줄만. 주소를 대신 열거나 요약하지 마세요. **`확인값 …`** 줄은 그대로 함께 전달(브라우저 화면과 같아야 이 PC 의 연결).
@@ -32,12 +53,14 @@ node "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/vibeagent-connect.mjs"
 ```toml
 [mcp_servers.pable-pax-preview]
 command = "node"
-args = ["<절대경로>"]
+args = ["<절대경로>", "--require-session"]
 ```
 
 - Codex 는 MCP 서버를 **시작 시점에만 로드**합니다. 위 추가만으로는 **현재 세션에 도구가 뜨지 않으며, 에이전트는 Codex 를 직접 재시작할 수 없습니다.** 사용자에게 **"Codex 를 완전히 재시작(앱 종료 후 재실행)한 다음 '이어서 진행해줘'라고 말씀해 주세요"** 라고 요청하고 거기서 멈추세요.
 - ⚠️ manifest·env 값을 가져올 **다른 로컬 명령이나 우회 경로를 찾지 마세요.** 그 값은 오직 `pable-pax-preview` MCP 도구로만 제공됩니다.
-- Codex 는 **한 번에 한 프로젝트**만 연결됩니다(플러그인 폴더에서 실행되므로 최근 연결이 쓰임). 다른 프로젝트로 바꾸려면 그 폴더를 Codex 에서 열고 다시 연결하세요. `get_project_manifest` 의 `repoUrl` 이 작업 폴더의 remote 와 다르면 그 사실을 사용자에게 알리고 진행을 멈추세요.
+- Codex는 같은 폴더에서도 채팅별 연결을 사용합니다. 로컬 파일 작업 전에는 연결 서비스와 작업 폴더를 대조하세요.
 
 ## 3. 연결 끊기
-사용자가 "연결 끊어줘" 를 요청하면 `disconnect` 도구를 호출한 뒤 `/pax-preview:disconnect` 명령의 절차대로 토큰 파일을 지우세요(Claude 에선 `/pax-preview:disconnect`).
+Codex는 `disconnect({})` 도구로 현재 채팅만 해제합니다. 다른 채팅의 연결은 같은 저장소여도 유지됩니다.
+Claude Code는 기존처럼 `disconnect` 도구를 호출한 뒤 `/pax-preview:disconnect` 명령의 로컬 정리 절차를 따릅니다.
+Claude의 같은 저장소 clone/worktree는 기존처럼 토큰을 공유합니다.
