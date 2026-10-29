@@ -40,7 +40,7 @@ import { callTool, resultText, PLUGIN_ID } from './lib/rpc.mjs';
 import { containsShellDirective } from './lib/skillGuard.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const PLUGIN_VERSION = '2.2.1';
+const PLUGIN_VERSION = '2.2.2';
 /** 이 플러그인의 설치 이름 — 마커 `instance=` 에 기록(원본도 명시값: 빈 값이면 마커 없는 옛 사본과 구분이 안 된다). */
 const PLUGIN_NAME = PLUGIN_ID ? `pax-${PLUGIN_ID}` : 'pax';
 const MAX_SKILLS = 50;
@@ -50,6 +50,13 @@ const NAME_RE = /^pax-[a-z][a-z0-9-]*[a-z0-9]$/;
 const TMP_RE = /^(pax-[a-z][a-z0-9-]*[a-z0-9])\.(new|old)-\d+$/;
 const SEG_RE = /^[\p{L}\p{N} ._-]{1,128}$/u;
 const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+// 형제 폴더(`scripts/`·`examples/` 등, 2.2.2) — SYNC: src/lib/skillRefPath.ts REF_ROOT_RE·REF_RESERVED_ROOTS (generate-plugin-files 가드가 불일치 차단).
+// 서버가 권위, 여기는 방어선. 모르는 폴더 경로는 스킬 통째가 아니라 **그 파일만** 건너뛴다(예약 목록이 버전 사이에 달라져도 스킬이 멈추지 않게).
+const ROOT_RE = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u;
+// references/ 뒤 세그먼트 상한 = 서버 REF_DEPTH_MAX(4)+1, 형제 폴더 뒤 = 서버 REF_SIBLING_DEPTH_MAX(3)+1 — 가드가 대조
+const REF_SEGS_MAX = 5;
+const SIBLING_SEGS_MAX = 4;
+const RESERVED_ROOTS = new Set(['assets']);
 const ROOTS = [
   { rel: join('.claude', 'skills'), tag: 'claude' },
   { rel: join('.agents', 'skills'), tag: 'agents' },
@@ -362,6 +369,7 @@ async function syncUnderLock({ realDir, remote, sel, stateDir, hasManaged }) {
   const skipped = skippedServer.map((s) => ({ name: String(s?.name ?? ''), reason: String(s?.reason ?? '') }));
   const desired = [];
   let total = 0;
+  const droppedFiles = []; // 모르는 형제 폴더 경로 — 그 파일만 건너뜀
   for (const skill of bundle.skills.slice(0, MAX_SKILLS)) {
     const name = String(skill?.name ?? '');
     if (!NAME_RE.test(name)) { skipped.push({ name, reason: 'bad_name' }); continue; }
@@ -372,11 +380,23 @@ async function syncUnderLock({ realDir, remote, sel, stateDir, hasManaged }) {
       const content = typeof f?.content === 'string' ? f.content : null;
       if (content === null || Buffer.byteLength(content) > MAX_FILE) { ok = false; break; }
       if (p !== 'SKILL.md') {
-        if (!p.startsWith('references/')) { ok = false; break; }
+        const top = p.split('/')[0];
+        const isRefs = top === 'references';
+        // Windows 예약어(con·nul 등) 폴더는 서버가 보내도 그 파일만 건너뛴다 — Windows 에서 만들 수 없어 동기화 전체가 실패하지 않게
+        if (!isRefs && (!ROOT_RE.test(top) || top !== top.normalize('NFC').toLowerCase() || RESERVED_ROOTS.has(top) || WIN_RESERVED.test(top))) {
+          droppedFiles.push(name); // 경로 문자열(서버 값)은 출력하지 않는다 — 스킬 이름(NAME_RE 통과)만
+          continue;
+        }
         const segs = p.split('/').slice(1);
-        if (segs.length === 0 || segs.length > 5) { ok = false; break; }
-        if (segs.some((s) => !s || s === '.' || s === '..' || !SEG_RE.test(s) || s.startsWith('.') || /[.\s]$/.test(s) || WIN_RESERVED.test(s) || s.includes(':') || s.includes('\\'))) { ok = false; break; }
-        if (segs[segs.length - 1].toLowerCase() === 'skill.md') { ok = false; break; }
+        const badSegs = segs.length === 0 || segs.length > (isRefs ? REF_SEGS_MAX : SIBLING_SEGS_MAX) ||
+          segs.some((s) => !s || s === '.' || s === '..' || !SEG_RE.test(s) || s.startsWith('.') || /[.\s]$/.test(s) || WIN_RESERVED.test(s) || s.includes(':') || s.includes('\\')) ||
+          segs[segs.length - 1].toLowerCase() === 'skill.md';
+        if (badSegs) {
+          // references 는 종전 규칙(스킬 통째 건너뜀), 형제 폴더는 그 파일만 — 서버 규칙이 넓어져도 스킬 전달이 멈추지 않게
+          if (isRefs) { ok = false; break; }
+          droppedFiles.push(name);
+          continue;
+        }
       }
       if (containsShellDirective(content)) { skipped.push({ name, reason: 'shell_directive' }); ok = false; break; }
       files.push({ path: p, content });
@@ -595,7 +615,12 @@ async function syncUnderLock({ realDir, remote, sel, stateDir, hasManaged }) {
     if (HOOK) modelLines.push(`PAX 스킬 동기화가 이 PC에서 고쳐진 스킬(${name})을 PAX에 등록된 내용으로 되돌렸다. 고친 내용은 ${where} 에 보관돼 있다.`);
   }
   const shownSkipped = skipped.filter((s) => NAME_RE.test(s.name) && REASON_TEXT[s.reason]);
+  const droppedNames = [...new Set(droppedFiles)].filter((n) => NAME_RE.test(n) && desiredNames.has(n));
+  const droppedLine = droppedNames.length
+    ? `(주의) ${droppedNames.join(', ')} 스킬의 일부 폴더는 이 PC 에 만들 수 없는 이름이거나 이 PAX 플러그인 버전이 받지 못해 건너뛰었어요.`
+    : null;
   if (HOOK) {
+    if (droppedLine && onceADay(stateDir, `dropped:${droppedNames.join(',')}`)) say(droppedLine);
     for (const s of shownSkipped) if (onceADay(stateDir, `skip:${s.name}:${s.reason}`)) say(`(건너뜀) ${s.name}: ${REASON_TEXT[s.reason]}`);
     if (degraded && onceADay(stateDir, 'degraded')) say('(주의) 서버 조회가 일부 실패해 이번엔 지우지 않았어요.');
     const parts = [];
@@ -609,6 +634,7 @@ async function syncUnderLock({ realDir, remote, sel, stateDir, hasManaged }) {
     return;
   }
   for (const s of skipped) say(`(건너뜀) ${NAME_RE.test(s.name) ? s.name : '(이름 오류)'}: ${REASON_TEXT[s.reason] ?? s.reason}`);
+  if (droppedLine) say(droppedLine);
   if (degraded) say('(주의) 서버 조회가 일부 실패해 삭제는 하지 않았어요.');
   say(`[스킬 동기화] 추가 ${added} 갱신 ${updated} 삭제 ${deleted} 건너뜀 ${skipped.length}${desired.length ? ` — 스킬은 pax-* 이름으로 자동 등장해요` : ''}`);
 }

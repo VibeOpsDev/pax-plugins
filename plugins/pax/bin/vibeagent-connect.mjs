@@ -31,7 +31,7 @@ import { acquirePendingLock } from './lib/pendingLock.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
 /** 배포 시 서버가 치환(미치환 개발본이면 연결 전 확인을 건너뛴다 — `connectPreflight` 가 형식으로 거른다). */
-const PLUGIN_VERSION = '2.2.1';
+const PLUGIN_VERSION = '2.2.2';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(HERE, '..');
 /**
