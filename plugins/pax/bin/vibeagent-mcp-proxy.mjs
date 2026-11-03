@@ -43,7 +43,7 @@ const REQUIRE_PROJECT_DIR = process.argv.includes('--require-project-dir');
 
 const PROTOCOL_VERSION = '2025-06-18';
 // version 은 마켓플레이스 배포 시 아래 placeholder 가 실제 버전으로 치환됨(단일 소스: src/lib/pluginVersion.ts).
-const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.2.2' };
+const SERVER_INFO = { name: 'pax-local-ai-preview', version: '2.2.5' };
 // 서버가 "이 사용자가 구버전인가"를 알 수 있는 유일한 신호. 서버는 **헤더 부재 = 기능 도입 이전 버전**으로
 // 판정하므로 값이 이상해도 보내는 것 자체는 유지한다(baked 상수라 실패할 수 없다).
 // 비-ASCII/제어문자가 섞이면 fetch 가 TypeError 를 던져 **전 도구 호출이 실패**하므로 필터는 필수.
@@ -56,9 +56,9 @@ const TOOL_LABEL = PLUGIN_ID ? `PAX(${PLUGIN_ID}) · ` : '';
 const NOARGS = { type: 'object', properties: {} };
 const TOOLS = [
   { name: 'status', description: '현재 브리지 연결의 프로젝트·스코프·인프라 준비 상태를 반환합니다.', inputSchema: NOARGS },
-  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값만 반환합니다 — publicKeys(앱 공개 설정값: NEXT_PUBLIC_*/VITE_*·PORTAL_URL·SSO_CLIENT_ID(기존 v1 앱은 SSO_SERVICE_ID), Supabase 연결 여부와 무관) + Supabase URL·anon key(ready 일 때). service_role·SSO_CLIENT_SECRET·SSO_SECRET 등 비밀 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
+  { name: 'get_public_env', description: '로컬 .env 에 쓸 공개값만 반환합니다 — publicKeys(앱 공개 설정값: NEXT_PUBLIC_*/VITE_*·PORTAL_URL·SSO_CLIENT_ID(기존 v1 앱은 SSO_SERVICE_ID), Supabase 연결 여부와 무관) + Supabase URL·anon key(ready 일 때). service_role·SSO_CLIENT_SECRET·SSO_SERVER_SECRET·SSO_SECRET 등 비밀 미포함. 미준비 시 notReadyReason(+ stalled:true = 연결 중단, 웹에서 재연동 필요)로 상태를 알립니다.', inputSchema: NOARGS },
   { name: 'get_service_role_key', description: '로컬 .env.development.local 용 SUPABASE_SERVICE_ROLE_KEY 를 반환합니다(편집자/소유자 + GitHub 쓰기 권한 필요). 받은 값은 파일에만 기록 — 채팅 출력·커밋 금지.', inputSchema: NOARGS },
-  { name: 'get_project_manifest', description: 'clone/로컬 실행에 필요한 repo·브랜치·배포주소(*.vercel.app) 정보를 반환합니다.', inputSchema: NOARGS },
+  { name: 'get_project_manifest', description: 'clone/로컬 실행에 필요한 repo·브랜치·배포주소(보통 *.vercel.app, 회사 도메인을 연결했으면 그 주소) 정보를 반환합니다.', inputSchema: NOARGS },
   { name: 'get_project_skills', description: '이 프로젝트 폴더에 놓을 회사·개인 스킬 번들을 반환합니다(read-only). 직접 호출하지 말고 bin/vibeagent-sync-skills.mjs 가 clone 폴더의 .claude/skills/pax-* 에 씁니다.', inputSchema: NOARGS },
   { name: 'get_supabase_schema', description: 'public 스키마의 테이블·컬럼 구조를 반환합니다(read-only).', inputSchema: NOARGS },
   { name: 'get_rls_status', description: '테이블별 RLS 활성 여부와 정책 목록을 반환합니다(read-only).', inputSchema: NOARGS },
@@ -160,7 +160,7 @@ const TOOLS = [
       },
     },
   },
-  { name: 'get_vercel_status', description: '최근 배포 상태를 반환합니다(read-only). 배포주소는 *.vercel.app 만 노출.', inputSchema: NOARGS },
+  { name: 'get_vercel_status', description: '최근 배포 상태를 반환합니다(read-only). 배포주소는 대표 배포 주소만 노출(대시보드·내부 배포 호스트는 가림).', inputSchema: NOARGS },
   { name: 'request_vercel_deploy', description: 'production 재배포를 요청합니다(편집자/소유자 + GitHub 쓰기 권한 필요).', inputSchema: NOARGS },
   {
     name: 'get_deploy_logs',
@@ -242,7 +242,7 @@ const TOOLS = [
   {
     name: 'get_portal_registration',
     description:
-      '이 프로젝트의 pable studio 서비스 등록 상태와 서비스 ID(SSO 코드의 service/aud 클레임 값)를 조회합니다(read-only). 로그인 방식(ssoProtocol: v1·v2·아직 미정 null)과 v2 의 client_id 도 알려 줍니다 — pable studio SSO 연동 코드를 만들기 전, 서비스 ID 가 필요할 때 먼저 호출하세요.',
+      '이 프로젝트의 pable studio 서비스 등록 상태와 서비스 ID(SSO 코드의 service/aud 클레임 값)를 조회합니다(read-only). 로그인 방식(ssoProtocol: v1·v2·아직 미정 null)과 v2 의 client_id 도 알려 줍니다 — pable studio SSO 연동 코드를 만들기 전, 서비스 ID 가 필요할 때 먼저 호출하세요. 자동 발송용 키 상태(serverKey: none·requested·issued, null = pable studio 미지원)도 알려 줍니다 — 로그인 없이 메일을 보내는 기능을 만들기 전, 사용자가 "발급됐다"고 할 때 이 값으로 확인하세요.',
     inputSchema: NOARGS,
   },
   {
@@ -278,13 +278,13 @@ const TOOLS = [
   {
     name: 'claim_portal_sso_key',
     description:
-      '승인된(APPROVED) SSO 키를 수령해 이 프로젝트의 설정값 저장소와 배포(Vercel) 환경에 저장합니다 — SSO_CLIENT_ID·SSO_CLIENT_SECRET(기존 v1 등록이면 SSO_SECRET·SSO_SERVICE_ID — 키 값은 반환되지 않고 로컬 .env 에도 들어가지 않습니다). 수령은 누적 5회 한도이니 재시도 루프 금지.',
+      '승인된(APPROVED) SSO 키를 수령해 이 프로젝트의 설정값 저장소와 배포(Vercel) 환경에 저장합니다 — SSO_CLIENT_ID·SSO_CLIENT_SECRET(+ 자동 발송용 키가 발급됐으면 SSO_SERVER_SECRET, 기존 v1 등록이면 SSO_SECRET·SSO_SERVICE_ID — 키 값은 반환되지 않고 로컬 .env 에도 들어가지 않습니다). get_portal_registration 의 serverKey 가 issued 인데 SSO_SERVER_SECRET 이 아직 없을 때도 호출합니다. 수령은 누적 5회 한도이니 재시도 루프 금지.',
     inputSchema: {
       type: 'object',
       properties: {
         force: {
           type: 'boolean',
-          description: '이미 SSO_CLIENT_SECRET(기존 v1 등록은 SSO_SECRET) 이 있어도 새 키로 교체 배선할 때만 true (재발급 완료를 사용자가 명시한 경우)',
+          description: '이미 SSO_CLIENT_SECRET·SSO_SERVER_SECRET(기존 v1 등록은 SSO_SECRET) 이 있어도 새 키로 교체 배선할 때만 true (재발급 완료를 사용자가 명시한 경우)',
         },
       },
     },

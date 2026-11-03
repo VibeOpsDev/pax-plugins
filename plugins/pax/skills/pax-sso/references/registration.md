@@ -11,18 +11,21 @@
 | 단계 | 주체 |
 |---|---|
 | 서비스 등록 생성 | 자동 — 프로젝트 생성 시 "pable studio에 서비스 등록" 체크, 또는 `register_portal_service` (웹·로컬 공통, 멱등 — 재호출 무해. **`confirmedNew` 필요**). **SSO 연동은 꺼진 중립 상태로 생성** |
-| 등록 상태·서비스 ID 조회 | 자동 — `get_portal_registration` (웹 채팅·로컬 MCP 동일 이름, `supportsSso`·`revealCount` 포함) |
+| 등록 상태·서비스 ID 조회 | 자동 — `get_portal_registration` (웹 채팅·로컬 MCP 동일 이름, `supportsSso`·`revealCount`·`serverKey` 포함) |
 | SSO 연동 켜기 | 자동(웹·로컬 공통) — `request_portal_sso_key` 가 신청 직전 활성화. **비가역(끄기 불가 — 해제는 등록 삭제뿐)이므로 반드시 사용자 확인 후** |
 | SSO 키 발급 신청 | 자동(웹·로컬 공통) — `request_portal_sso_key` (**스코프 없는 기본 키만**) / 스코프가 필요한 신청은 사람이 pable studio에서 |
 | 발급 승인 | **사람 — pable studio 관리자 (유일한 사람 필수 단계)** |
-| 키 수령·설정값 배선 | 자동(웹·로컬 공통) — `claim_portal_sso_key` (SSO_CLIENT_ID·SSO_CLIENT_SECRET(+PORTAL_URL) 저장, 값 미노출, 누적 5회 한도 공유) / 수동 폴백 = pable studio "키 확인" + 입력 카드(웹 manage_env request_input · 로컬 set_vercel_env) |
+| 키 수령·설정값 배선 | 자동(웹·로컬 공통) — `claim_portal_sso_key` (SSO_CLIENT_ID·SSO_CLIENT_SECRET(+PORTAL_URL, +자동 발송용 키가 발급됐으면 SSO_SERVER_SECRET) 저장, 값 미노출, 누적 5회 한도 공유) / 수동 폴백 = pable studio "키 확인" + 입력 카드(웹 manage_env request_input · 로컬 set_vercel_env) |
+| 자동 발송용 키 신청 | 사람 — 사용자가 pable studio "SSO 키 · 스코프" 창에서 시스템 메일 + "자동 발송이 필요한 이유"로 신청 → 회사 관리자가 승인하며 발급(도구 대행 없음) |
+| 자동 발송용 키 수령 | 자동(웹·로컬 공통) — `get_portal_registration` 의 `serverKey` 가 `issued` 면 `claim_portal_sso_key` 가 `SSO_SERVER_SECRET` 으로 저장(로그인 키를 이미 받았어도 — 저장돼 있으면 횟수 소모 없이 끝남) |
 | 스코프 변경 | 사람 — pable studio "SSO 키 · 스코프" 창에서 스코프 신청 → 관리자 승인(키·배선·배포 그대로) |
 | 키 재발급 | 사람 — pable studio "SSO 키 · 스코프" 창(이전 키 1시간 함께 통과, 유출이면 즉시 중단 · 등록마다 24시간에 3번까지, 넘으면 `429 rotate_limit`) → `claim_portal_sso_key` force 로 교체 배선 |
 | 등록 수정·삭제 | 사람 — pable studio 대시보드 (도구 대행 없음) |
 
 **스코프 정책**: 도구 신청은 항상 `requested_scopes: []` (기본 키). 사내 데이터(pable studio Bearer API)
 스코프는 파급이 커서 사용자가 pable studio 화면에서 직접 선택·신청한다 — AI 가 스코프 신청을 대행하지
-않는다. 스코프 변경은 키를 바꾸지 않는다(재배선·재배포 불필요).
+않는다. 스코프 변경은 키를 바꾸지 않는다(재배선·재배포 불필요). 자동 발송용 키(로그인한 사람 없이 시스템 메일을 보내는 키)
+신청도 같다 — 신청 이유를 사용자가 직접 쓰고, AI 는 신청을 안내만 한다(SKILL.md "자동 발송용 키").
 
 등록·신청·수령 도구는 **웹 채팅과 로컬 브리지 양쪽에 같은 이름으로 있다**(1.1.0 부터).
 `claim_portal_sso_key` 는 프로젝트 설정값 저장소(웹 [코드] 탭 `.env.local` 로 편집 권한자에게
@@ -34,7 +37,7 @@
 (pable studio가 bearer 접근을 등록 출처로 제한한다 — 목록·id 조회·중복 응답 세 경로 모두). `registered:
 false` 를 "미등록" 으로 단정하지 말고 사용자에게 직접 등록 여부를 먼저 확인할 것. 이미 있으면
 새로 만들지 말고 그 카드 "SSO 키 · 스코프" 창의 값으로 배선한다 — 서비스 ID(`dev-…`) → `SSO_CLIENT_ID` · 비밀 키 → `SSO_CLIENT_SECRET` ·
-pable studio 주소 → `PORTAL_URL`(토큰 발급자 — 글자 그대로). 서명 키 하나만 보이면 기존 v1 등록이다(SKILL.md 규칙 -0.5).
+pable studio 주소 → `PORTAL_URL`(토큰 발급자 — 글자 그대로) · 자동 발송용 키(받은 경우만) → `SSO_SERVER_SECRET`. 서명 키 하나만 보이면 기존 v1 등록이다(SKILL.md 규칙 -0.5).
 
 ## 로그인 방식 (`ssoProtocol`) — 새 등록은 전부 v2
 

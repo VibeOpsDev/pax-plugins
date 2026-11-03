@@ -81,12 +81,12 @@ description: "PAX(preview) · Supabase/Vercel/pable studio 등록 조회·생성
 - `set_vercel_env`는 값을 **두 곳에 함께** 저장합니다 — 이 프로젝트의 **설정값 저장소**(PAX 웹 [코드] 탭의 `.env.local`, 편집 권한자에게 보임)와 **배포(Vercel) 환경**. `unset_vercel_env`도 두 곳에서 **함께** 지웁니다.
 - **사용자 PC 의 로컬 파일(`.env.development.local`)에는 들어가지 않습니다.** 로컬에서도 같은 값으로 테스트하려면 **PAX 웹 [코드] 탭의 `.env.local`에서 값을 복사해 `.env.development.local`에 직접 추가**해야 합니다(사용자에게 안내하거나, 사용자가 값을 주면 AI가 파일에 씁니다). 시크릿 취급은 secret-safety 규칙을 따르세요.
 - env를 바꾼 뒤에는 **`request_vercel_deploy`로 재배포해야 배포된 앱에 실제로 적용**됩니다(저장은 즉시, 적용은 재배포 후).
-- 잘못 넣은 키는 `unset_vercel_env`로 지웁니다. 단 **프로젝트 좌표·DB 자격증명·로그인 연동 키**(`SSO_CLIENT_SECRET`·`SSO_SECRET`·`PORTAL_URL`·`SUPABASE_SERVICE_ROLE_KEY` 등)는 서버가 삭제를 거절합니다 — 설정값 저장소가 유일한 사본이어서 지우면 되돌릴 수 없기 때문입니다. 값을 바꾸려면 `set_vercel_env`로 덮어쓰세요.
+- 잘못 넣은 키는 `unset_vercel_env`로 지웁니다. 단 **프로젝트 좌표·DB 자격증명·로그인 연동 키**(`SSO_CLIENT_SECRET`·`SSO_SERVER_SECRET`·`SSO_SECRET`·`PORTAL_URL`·`SUPABASE_SERVICE_ROLE_KEY` 등)는 서버가 삭제를 거절합니다 — 설정값 저장소가 유일한 사본이어서 지우면 되돌릴 수 없기 때문입니다. 값을 바꾸려면 `set_vercel_env`로 덮어쓰세요.
 - 민감한 값(API 키·`SERVICE_ROLE` 등)을 **채팅에 붙여넣는 것 자체가 노출**입니다. 꼭 필요할 때만 사용자가 직접 값을 제공하게 하고, 등록 뒤 그 값을 화면에 다시 출력하지 마세요. (등록은 `set_vercel_env`로 값을 *올리는* 정상 흐름이고, 값을 *보여주는* 것은 별개의 위험입니다.)
 
 ## 사용자에게 노출 가능한 정보 (중요)
-사용자에게는 **GitHub 저장소 주소**와 **배포 주소(`*.vercel.app`)** 만 보여주세요. 다음 운영 인프라 식별자는 **절대 노출하거나 추측해서 만들지 마세요**:
+사용자에게는 **GitHub 저장소 주소**와 **배포 주소**(도구가 주는 `deployUrl`·`productionUrl` — 보통 `*.vercel.app`, 회사 도메인을 연결한 프로젝트면 그 주소)만 보여주세요. 다음 운영 인프라 식별자는 **절대 노출하거나 추측해서 만들지 마세요**:
 - Vercel 대시보드/인스펙터 URL(`vercel.com/...`), org·team 이름, project id, deployment id(uid)
 - Supabase project ref, 대시보드 URL, DB 호스트
 
-배포 상태를 알릴 땐 `get_vercel_status`·`get_pr_gate_status`가 주는 `state`·`phase`·`deployUrl`(*.vercel.app)·커밋 SHA 정도만 사용하세요. "배포 보기" 같은 대시보드 링크를 만들지 마세요.
+배포 상태를 알릴 땐 `get_vercel_status`·`get_pr_gate_status`가 주는 `state`·`phase`·`deployUrl`(도구가 준 배포 주소 그대로 — 주소를 직접 만들지 마세요)·커밋 SHA 정도만 사용하세요. "배포 보기" 같은 대시보드 링크를 만들지 마세요.

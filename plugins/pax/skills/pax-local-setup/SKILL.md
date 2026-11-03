@@ -43,7 +43,7 @@ description: "PAX(preview) · PAX 프로젝트를 로컬에 clone하고 환경�
   - `'provisioning'` (stalled 없음) → 곧 준비됨. **최대 한 번만** 짧게 재시도하고, 그래도 없으면 "DB 준비되면 다시 '준비해줘' 하면 env까지 채울게요"라고 안내 후 **멈추세요**.
   - `'env_error'` → 설정값 파일 복호 실패(미연결 아님). 재연결 유도 금지, 관리자 문의를 안내하고 멈추세요.
 - 그다음 `list_vercel_env` 로 배포 환경변수 **키 이름**을 조회해(값은 안 옵니다), 아직 로컬 파일에 없는 키가 있으면 사용자에게 알리세요: "다음 값은 비밀이라 자동으로 내려오지 않아요 — PAX 화면의 **설정값** 메뉴에서 확인해 `.env.development.local` 에 직접 넣어 주세요: `KEY1`, `KEY2`". **값을 추측해 넣지 마세요**(빈 값도 쓰지 마세요). Vercel 미연결(`connected: false`)이면 이 단계는 생략.
-- `publicKeys` 에 `SSO_CLIENT_ID`(기존 v1 앱은 `SSO_SERVICE_ID`)가 있으면 pable studio 로그인 앱입니다 — 비밀값(`SSO_CLIENT_SECRET`, 기존 v1 앱은 `SSO_SECRET`)은 내려오지 않으니 `pax-sso` 스킬의 로컬 규칙대로 `DEV_BYPASS_SSO=true` 를 함께 넣어 로그인 화면이 로컬에서 돌게 하세요. 로컬에서 실제 pable studio 로그인까지 시험하려면 `pax-sso` 스킬의 "로컬 SSO" 대로 비밀값을 넣고 `DEV_BYPASS_SSO` 를 끕니다(켜져 있으면 mock 세션이 뜬다).
+- `publicKeys` 에 `SSO_CLIENT_ID`(기존 v1 앱은 `SSO_SERVICE_ID`)가 있으면 pable studio 로그인 앱입니다 — 비밀값(`SSO_CLIENT_SECRET`·자동 발송용 키 `SSO_SERVER_SECRET`, 기존 v1 앱은 `SSO_SECRET`)은 내려오지 않으니 `pax-sso` 스킬의 로컬 규칙대로 `DEV_BYPASS_SSO=true` 를 함께 넣어 로그인 화면이 로컬에서 돌게 하세요. 로컬에서 실제 pable studio 로그인까지 시험하려면 `pax-sso` 스킬의 "로컬 SSO" 대로 비밀값을 넣고 `DEV_BYPASS_SSO` 를 끕니다(켜져 있으면 mock 세션이 뜬다).
 - **get_public_env 가 `ready: true` 면 이어서** `get_service_role_key`를 호출하세요(기본 동작) — 받으면 `SUPABASE_SERVICE_ROLE_KEY=`를 같은 파일에 추가합니다(배포된 앱과 동일하게 서버 라우트가 로컬에서 동작). 이 키는 `.env.development.local` 밖으로 옮기지 말고 커밋·공유하지 마세요(`pax-secret-safety`).
 - **`get_service_role_key`가 ready:false든 권한 거부든 대응은 동일합니다** — 재시도·폴링하지 말고 공개값만으로 셋업을 끝내세요. 마친 뒤 권한 거부였다면 "편집자/소유자는 `/pax-preview:connect` 로 재연결하면 서버 키까지 받아요" 라고 한 줄 안내하세요.
 - **DB 직결 비밀(`SUPABASE_DB_URL`/DB 비밀번호)은 여전히 받지 않습니다(서버 DDL 전용 — 배포된 앱에도 없는 값).**

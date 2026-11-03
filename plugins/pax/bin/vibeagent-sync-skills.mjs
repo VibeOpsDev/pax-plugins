@@ -40,7 +40,7 @@ import { callTool, resultText, PLUGIN_ID } from './lib/rpc.mjs';
 import { containsShellDirective } from './lib/skillGuard.mjs';
 
 const MCP_URL = process.env.CLAUDE_CODE_MCP_SERVER_URL || 'https://owen-vibeagent-git-develop-polaris-office.vercel.app/api/local-ai/mcp';
-const PLUGIN_VERSION = '2.2.2';
+const PLUGIN_VERSION = '2.2.5';
 /** 이 플러그인의 설치 이름 — 마커 `instance=` 에 기록(원본도 명시값: 빈 값이면 마커 없는 옛 사본과 구분이 안 된다). */
 const PLUGIN_NAME = PLUGIN_ID ? `pax-${PLUGIN_ID}` : 'pax';
 const MAX_SKILLS = 50;

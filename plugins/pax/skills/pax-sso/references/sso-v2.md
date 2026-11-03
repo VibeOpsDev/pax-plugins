@@ -1,7 +1,7 @@
 # pable studio SSO v2 레시피 (`ssoProtocol: 'v2'` 등록 전용)
 
 새로 회사 계정 로그인을 붙이는 앱은 **전부 이 레시피로** 만든다(`get_portal_registration` 의 `ssoProtocol` 이 `'v2'` 이거나 아직 `null`).
-기존 v1 앱 유지보수 문서(`sso-v1.md`)의 코드는 쓰지 않는다 — 섞으면 로그인이 되지 않는다. 사용자에게 v1/v2 를 설명할 필요는 없다.
+기존 v1 앱 유지보수 문서(`sso-v1.md`)의 코드는 쓰지 않는다 — 섞으면 로그인이 되지 않는다. 🚫 사용자에게 하는 말(계획·진행 보고·완료 보고 전부)에 v1·v2·옛 방식·새 방식을 쓰지 마라 — "pable studio 로그인"이라고만 한다.
 규칙 -1(스코프 가드)·규칙 0(선행조건)은 SKILL.md, 역할 등급·DEV_BYPASS·멀티테넌트 규칙은 멀티테넌트 참조 문서 그대로다.
 
 프로토콜: 인가 코드 + PKCE S256 + client secret(client_secret_post) → 접근 토큰(ES256 JWT, 60초)을 pable studio JWKS 로 검증 →
@@ -29,6 +29,10 @@
 | `app/page.tsx` (보호 페이지) | 세션 가드 + 역할 기반 기능 등급 |
 | `app/login/page.tsx` | **공개** 안내 페이지 — 로그아웃 뒤 도착·로그인 실패 문구·설정 미비 폴백 |
 | `app/auth/logout/route.ts` | refresh 폐기 + 쿠키 삭제 후 `/login` |
+| `lib/portal-server-token.ts` | (자동 발송 앱만) `getServerToken()` — 로그인한 사람 없이 시스템 메일을 보낼 서버 토큰(5분) |
+| `lib/system-mail.ts` | (자동 발송 앱만) `sendSystemMail()` — 시스템 메일 보내기 |
+| `lib/cron-runs.ts` | (예약 발송 앱만) 같은 메일을 두 번 보내지 않는 표식 — 앱 DB(`cron_runs`, 서버 전용) |
+| `app/api/cron/<이름>/route.ts` + `vercel.json` | (예약 발송 앱만) Vercel Cron 이 부르는 주소 — `CRON_SECRET` 이 맞을 때만 보낸다 |
 
 `src/` 를 쓰는 프로젝트(PAX 기본)는 `src/lib/…`·`src/app/…` 에 둔다. import 는 `@/lib/sso`(PAX 기본 tsconfig `@/* → ./src/*`) —
 별칭이 없는 프로젝트면 상대 경로로 바꾼다.
@@ -42,7 +46,9 @@
    돌아갈 주소를 그 경로 아래(`https://host/app/auth/sso/callback`)로 등록하는데, 이 코드는 루트(`{origin}/auth/sso/callback`)로 만든다.
 2. **설정값 3종** — `PORTAL_URL`(pable studio 정본 주소 = 토큰의 iss) · `SSO_CLIENT_ID`(`dev-{번호}`) · `SSO_CLIENT_SECRET`(서버 전용).
    `claim_portal_sso_key` 가 배선한다. v1 의 `SSO_SECRET`·`SSO_SERVICE_ID` 는 쓰지 않는다. **새 환경변수를 만들지 마라** —
-   세션 서명 키·토큰 암호화 키는 `SSO_CLIENT_SECRET` 에서 유도한다.
+   세션 서명 키·토큰 암호화 키는 `SSO_CLIENT_SECRET` 에서 유도한다. 예외는 둘뿐이다: 자동 발송용 키를 받은 앱의 `SSO_SERVER_SECRET`
+   (로그인 비밀값과 다른 값 — `claim_portal_sso_key` 가 함께 저장한다)과 예약 발송을 만드는 앱의 `CRON_SECRET`(무작위 값 — 웹 채팅은 `manage_env generate_secret` 으로 서버가 만들고, 로컬 AI 는 터미널에서 만든다. 직접 지어내지 않는다) — 아래 "자동 발송" 절.
+   예약 발송 표식(`cron_runs`)은 이미 있는 Supabase 설정값(`NEXT_PUBLIC_SUPABASE_URL`·`SUPABASE_SERVICE_ROLE_KEY`)을 쓴다.
 3. 🚫 **쿼리의 `iss` 로 주소를 만들지 마라.** 카드 주소는 누구나 흉내 낼 수 있다 — `iss` 가 설정값과 정확히 같을 때만 `login_hint` 를 쓰고,
    인가·토큰·JWKS 주소는 언제나 `PORTAL_URL`.
 4. 🚫 **client secret·refresh token·접근 토큰을 응답 본문·로그·주소·클라이언트 컴포넌트·`NEXT_PUBLIC_*` 에 싣지 마라.**
@@ -70,6 +76,11 @@
 12. **민감한 서버 동작은 `getAccessToken()` 실패를 로그인 안 됨으로 다룬다** — 삭제·권한 변경·외부 발송처럼 되돌리기 어려운 server action·쓰기 라우트는
     `getSession()` 만 보지 말고 `getAccessToken()` 도 본다(`requireLiveSession()`): `login_required` 면 로그인 안 된 것(401·다시 로그인 안내),
     `unavailable` 이면 진행하지 않는다(503·잠시 뒤). 앱 세션 쿠키는 pable studio 로그아웃·권한 회수 뒤에도 `SESSION_TTL` 까지 남는다. 예시는 아래 "민감한 서버 동작" 절.
+13. **계정 바꾸기·여러 계정 이야기는 사용자가 꺼낼 때만 한다** — 로그인을 붙일 때 이 기능을 미리 넣거나 제안하지 말고, 계획·완료 보고에 "계정은 하나만 돼요" 같은 안내도 덧붙이지 마라.
+    사용자가 찾으면 SKILL.md 의 판정대로 아래 "계정 바꾸기" 절을 쓴다. 🚫 그때도 계정 목록·계정 추가 화면을 앱에 만들거나 세션·토큰 쿠키를 계정마다 따로 두지 마라 — 여러 계정을 동시에 유지하는 레시피는 없다.
+14. **브라우저 저장소·클라이언트 캐시 키에 계정을 넣는다** — 한 브라우저를 여러 계정이 이어 쓸 수 있으므로, 사용자 데이터를 두는 localStorage·sessionStorage·IndexedDB 키와 SWR·React Query 캐시 키에
+    `portal_sub` 를 넣는다(`draft:${portalSub}:…` — 서버에서 `session.portal_sub` 를 props 로 내려 준다, 비밀이 아니다). 안 넣으면 앞 계정의 임시 저장·최근 항목이 다음 계정에 보인다.
+    이메일을 키로 쓰지 않는다(바뀔 수 있고 주소가 저장소에 그대로 남는다). 컬러 모드처럼 계정과 무관한 화면 설정은 대상이 아니다. 코드에만 적용하고 사용자에게 따로 말하지 않는다.
 
 ### `lib/sso.ts` — 공용 모듈
 
@@ -753,11 +764,137 @@ export async function GET(req: Request) {
   const res = NextResponse.redirect(new URL('/login', req.url))
   res.cookies.set(COOKIE_NAME, '', cookieOptions(0))
   res.cookies.set(TOKEN_COOKIE, '', cookieOptions(0))
-  res.cookies.set(HINT_COOKIE, '', cookieOptions(0, TX_PATH)) // 로그아웃 뒤엔 사용자가 계정을 고르게
+  res.cookies.set(HINT_COOKIE, '', cookieOptions(0, TX_PATH)) // 힌트를 남기지 않는다 — 다음 로그인은 pable studio 가 기억한 계정으로
   return res
 }
 ```
 > 로그아웃 링크는 일반 `<a href="/auth/logout">` 로 둔다(Next `<Link>` 는 미리 불러오기로 로그아웃이 일어날 수 있다).
+
+## 계정 바꾸기 (사용자가 찾을 때만)
+
+🚫 **로그인을 붙일 때 이 절을 미리 적용하지 마라**(규칙 13). 사용자가 다른 계정으로 바꾸는 기능을 찾을 때만 아래 네 곳을 고친다. 한 브라우저에서 계정은 한 번에 하나이고, 계정을 바꾸면 세션이 통째로 그 계정으로 바뀐다. 계정 목록과 계정 추가는 pable studio 의 계정 고르는 화면이 보여 주므로 앱에는 **링크 하나**면 된다.
+
+**① 시작 라우트** — `?switch=1` 이면 계정 고르는 화면을 연다.
+
+```ts
+// app/auth/sso/route.ts — hint 를 만드는 자리와 인가 주소의 mode 를 이렇게 바꾼다
+  const switching = q.get('switch') === '1' // 힌트를 싣지 않는다 — 실으면 지금 계정으로 화면 없이 돌아온다
+  const fromCard = q.get('iss') === PORTAL_ORIGIN ? q.get('login_hint') : null
+  const hint = switching ? null : fromCard || (await readTokens())?.sub || readHintCookie(req.cookies.get(HINT_COOKIE)?.value) || null
+  // …
+    mode: switching ? 'switch' : 'login',
+```
+
+**② 콜백** — 고르다 취소했는데 로그인돼 있으면 아무것도 바뀌지 않았으니 오류 안내 없이 돌아간다. import 에 `getSession` 을 더한다.
+
+```ts
+// app/auth/sso/callback/route.ts — ② 오류 콜백을 이렇게 바꾼다
+  const error = q.get('error')
+  if (error) {
+    const description = q.get('error_description')
+    const cancelled = error === 'access_denied' && description === 'user_cancelled'
+    if (cancelled && (await getSession())) {
+      const back = NextResponse.redirect(new URL('/', req.url))
+      back.cookies.set(TX_COOKIE, '', cookieOptions(0, TX_PATH))
+      return back
+    }
+    const res = fail(authorizeError(error, description))
+    // 로그인되지 않은 채 취소했으면 그 계정 힌트를 버린다 — 같은 계정을 다시 고집하지 않게
+    if (cancelled) res.cookies.set(HINT_COOKIE, '', cookieOptions(0, TX_PATH))
+    return res
+  }
+```
+
+**③ 링크** — 사용자 메뉴(로그아웃 옆)와 `app/login/page.tsx` 에 둔다. 일반 `<a>` 로 둔다(Next `<Link>` 는 미리 불러오기로 로그인 진행 쿠키를 덮어쓴다). `/login` 의 `denied` 문구는 `'이 계정으로는 이 서비스를 쓸 수 없어요. 다른 계정으로 로그인하거나 pable studio 관리자에게 문의해 주세요.'` 로 바꾼다.
+
+```tsx
+<a href="/auth/sso?switch=1">다른 계정으로 로그인</a>
+```
+
+**④ 다른 탭 멈추기** — 세션 쿠키는 브라우저 전체가 같이 쓴다. A 로 열어 둔 탭은 다른 탭(또는 pable studio 카드)에서 B 로 바뀐 뒤에도 A 의 화면을 보여 주면서 B 이름으로 저장한다. 그래서 **탭을 열 때와 다시 볼 때만** 계정을 물어, 바뀌었으면 새로고침 창으로 멈춘다.
+
+```ts
+// app/auth/whoami/route.ts — 탭이 자기 계정이 바뀌었는지 묻는 주소. 쿠키만 읽는다(pable studio 를 부르지 않는다)
+import { getSession } from '@/lib/sso'
+
+export async function GET() {
+  const session = await getSession()
+  return Response.json({ account: session?.portal_sub ?? null }, { headers: { 'Cache-Control': 'no-store' } })
+}
+```
+
+```tsx
+// components/AccountWatcher.tsx — app/layout.tsx 의 <body> 안에 한 번 둔다: <body>{children}<AccountWatcher /></body>
+'use client'
+import { useEffect, useRef, useState } from 'react'
+
+export function AccountWatcher() {
+  const [changed, setChanged] = useState(false)
+  const dialog = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    let active = true
+    let mine: string | null = null // 이 탭을 열 때의 계정
+    let askedAt = 0
+    const ask = async () => {
+      askedAt = Date.now()
+      try {
+        const res = await fetch('/auth/whoami', { cache: 'no-store' })
+        const { account } = (await res.json()) as { account?: unknown }
+        // 로그인이 끝난 것(null)은 계정이 바뀐 것이 아니다 — 다음 요청이 로그인으로 안내한다
+        if (!active || !res.ok || typeof account !== 'string') return
+        if (mine === null) mine = account
+        else if (account !== mine) setChanged(true)
+      } catch {
+        // 확인하지 못했다 — 다음에 돌아올 때 다시 묻는다
+      }
+    }
+    // 탭을 다시 볼 때만 묻는다. 돌아올 때 focus·visibilitychange 가 함께 오므로 2초 안의 중복은 한 번으로
+    const onReturn = () => {
+      if (document.visibilityState === 'visible' && Date.now() - askedAt > 2000) void ask()
+    }
+    void ask()
+    window.addEventListener('focus', onReturn)
+    window.addEventListener('pageshow', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      active = false
+      window.removeEventListener('focus', onReturn)
+      window.removeEventListener('pageshow', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [])
+
+  // 모달로 열어 나머지 화면을 누를 수 없게 한다
+  useEffect(() => {
+    if (changed) dialog.current?.showModal()
+  }, [changed])
+
+  if (!changed) return null
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby="account-changed-title"
+      onCancel={(e) => e.preventDefault()} // Esc 로 닫지 않는다
+      onClose={() => dialog.current?.showModal()} // Esc 를 거듭 누르면 브라우저가 닫는다 — 다시 연다
+      style={{ maxWidth: 360, padding: 24, border: 'none', borderRadius: 12 }}
+    >
+      <h2 id="account-changed-title" style={{ margin: '0 0 8px', fontSize: 18 }}>다른 계정으로 바뀌었어요</h2>
+      <p style={{ margin: '0 0 16px' }}>이 브라우저에서 다른 계정으로 로그인해서 이 탭을 멈췄어요. 새로고침하면 지금 계정으로 이어져요.</p>
+      <button type="button" onClick={() => location.reload()}>새로고침</button>
+    </dialog>
+  )
+}
+```
+
+동작과 지킬 것:
+
+- **고르면** 콜백이 세션을 그 계정으로 바꾸고 이전 계정의 로그인 유지를 폐기한 뒤 `/` 로 보낸다. 고른 계정은 이 브라우저·이 서비스에 기억돼 로그아웃 뒤 [pable studio로 로그인]도 그 계정으로 화면 없이 들어온다. pable studio 의 활성 계정은 바뀌지 않는다.
+- **고르는 화면에 없는 계정**은 그 화면의 [다른 계정 추가]로 붙인다. 앱이 할 일은 없다.
+- 🚫 `setInterval` 로 주기적으로 묻지 마라 — 열어 둔 탭마다 서버를 계속 부르게 된다.
+- **창으로 못 막는 것** — 자동 저장·주기 동기화처럼 탭이 뒤에 있는 동안 나가는 쓰기. 그런 기능이 있으면 요청에 화면을 그린 계정(`portal_sub`)을 함께 보내고, 서버가 `session.portal_sub` 와 다르면 412 로 거절해 화면이 새로고침을 안내하게 한다.
+- 창의 버튼 모양은 앱의 디자인에 맞춰도 된다. 문구와 `showModal` 은 그대로 둔다.
+- 실제 왕복은 배포에서 확인한다 — `DEV_BYPASS_SSO` 의 mock 세션은 고정이라 계정이 바뀌지 않는다.
 
 ## 컬러 모드 (선택 — 앱에 다크 모드가 있을 때만)
 
@@ -844,6 +981,341 @@ export async function deleteItem(id: string) {
 
 > 로그인 유지(refresh)가 발급되지 않는 환경이면 로그인 1분쯤 뒤부터 이 검사가 `sso_required` 를 낸다 — 아래 체크리스트의 로그인 유지 스위치를 먼저 확인한다.
 
+## 자동 발송 — 서버 토큰으로 시스템 메일 (로그인한 사람 없이)
+
+**자동 발송용 키를 받은 앱만** 만든다(`get_portal_registration` 의 `serverKey` 가 `'issued'` 이고 `claim_portal_sso_key` 가 `SSO_SERVER_SECRET` 을 저장한 뒤 — SKILL.md "자동 발송용 키" 절).
+앱 서버가 자동 발송용 키로 **서버 토큰**(5분)을 받아 `send-as` 로 시스템 메일을 보낸다. 서버 토큰으로 부를 수 있는 것은 **시스템 메일뿐**이다 —
+조직도·일정 같은 다른 pable studio API 는 지금처럼 로그인한 사람의 `getAccessToken()` 으로만 부른다.
+
+- **자동 발송용 키(`SSO_SERVER_SECRET`)는 로그인 비밀값(`SSO_CLIENT_SECRET`)과 다른 값이다** — 섞어 쓰지 마라. `client_id` 는 로그인과 같은 `SSO_CLIENT_ID`(`dev-…`)다.
+- 서버 토큰은 **등록한 회사** 것이다 — 다른 회사 사용자에게 보내는 예약 메일은 만들 수 없다. 보내는 주소는 그 회사의 시스템 발신 계정이고, 회사가 등록하지 않았으면
+  운영회사 주소로 대신 나간다(응답 `mailSource: "operator"` — 이때 `fromName` 은 운영회사 이름으로 바뀐다). 받는 사람 도메인도 회사 허용 도메인 안이어야 한다(`portal-api.md` send-as 절).
+- `sendSystemMail` 의 받는 사람·제목·내용은 **앱이 정한다**(직원·담당자 목록, 앱의 메일 틀). 🚫 요청 본문의 `to`·`subject`·`body` 를 그대로 넘기지 마라.
+  - **로그인한 사용자가 보내는 메일**(동료에게 보내기·초대 등)은 이 함수가 아니라 본인 명의 발송 `/api/graph/mail/send`(`getAccessToken()` — `portal-api.md`)로 만든다.
+    시스템 메일로 보내면 누가 보냈는지 남지 않고, 아무 직원이나 회사 발신 계정으로 아무 글이나 보내게 된다.
+  - 🚫 로그인하지 않은 방문자가 입력한 주소로 보내지 마라 — 회사 발신 계정으로 아무에게나 메일을 보내는 통로가 된다.
+  - 로그인하지 않은 사람이 발송을 일으키는 기능(공개 문의 폼 등)은 되도록 만들지 않는다. 꼭 필요하면: 받는 사람은 담당자로 고정, 방문자가 쓴 글은 **`contentType: 'Text'` 로만**
+    (HTML 금지 — 회사 발신 계정에서 온 피싱 메일이 된다)·길이 제한, 횟수 제한은 **앱 DB 에** 기록해 센다(서버 메모리는 인스턴스마다 따로라 막지 못한다).
+  - `contentType: 'HTML'` 은 앱이 정한 메일 틀에만 쓴다.
+- **PAX 미리보기에서도 실제로 메일이 나간다** — 미리보기는 가짜 로그인으로 돌지만 자동 발송용 키는 진짜다. 시험할 때는 받는 사람을 사용자 본인으로 두고, 사용자에게 이 점을 알린다.
+- 비밀값·토큰은 로그·응답·클라이언트에 싣지 않는다(규칙 4). 아래 파일들은 `'use client'`·`proxy.ts`·`middleware.ts` 에서 import 하지 않는다.
+
+### `lib/portal-server-token.ts` — 서버 토큰
+
+```ts
+/**
+ * pable studio 서버 토큰 — 로그인한 사람 없이 시스템 메일(send-as)을 보낼 때만 쓴다. 서버 전용.
+ * 자동 발송용 키(SSO_SERVER_SECRET)로 client_credentials 를 받는다 — 로그인 비밀값(SSO_CLIENT_SECRET)과 다른 값이다.
+ * 토큰은 5분이다. 끝나기 30초 전까지는 받아 둔 것을 쓴다. 🚫 proxy·middleware·'use client' 파일에서 import 하지 마라.
+ * 로그인 코드(lib/sso.ts)가 없는 앱도 쓰도록 설정값을 여기서 직접 읽는다 — 주소 규칙은 lib/sso.ts 와 같다.
+ */
+
+// 🚫 하드코딩 폴백(`?? 'https://…'`) 금지. https 만, 로컬 pable studio 만 http
+const PORTAL_ORIGIN = toPortalOrigin(process.env.PORTAL_URL)
+const CLIENT_ID = process.env.SSO_CLIENT_ID ?? '' // 로그인과 같은 client_id(`dev-…`) — claim_portal_sso_key 가 배선한다
+
+function toPortalOrigin(raw: string | undefined): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    const isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1'
+    return u.protocol === 'https:' || (u.protocol === 'http:' && isLocal) ? u.origin : null
+  } catch {
+    return null
+  }
+}
+
+export type ServerToken =
+  | { ok: true; token: string; portalOrigin: string }
+  // not_configured: SSO_SERVER_SECRET·PORTAL_URL·SSO_CLIENT_ID 중 없는 값이 있다(키를 아직 받지 않았거나, 받은 뒤 재배포하지 않았다)
+  // admin_required: pable studio 가 거절했다(키를 그만 썼거나 회수됨·SSO 연동 꺼짐·정식 서비스 승격 직후·등록한 사람 퇴사) — 다시 해도 같다
+  // retry_later: pable studio 가 잠시 응답하지 못했다 — retryAfterSec 뒤 다시
+  | { ok: false; reason: 'not_configured' | 'admin_required' | 'retry_later'; retryAfterSec?: number }
+
+const EARLY_MS = 30_000
+const REJECTED_MS = 60_000 // 거절은 1분 동안 다시 묻지 않는다(받는 사람마다 부르는 반복문이 pable studio 를 두드리지 않게)
+let cached: { token: string; expMs: number } | null = null
+let rejectedUntil = 0
+let warnedNotConfigured = false
+let inflight: Promise<ServerToken> | null = null
+
+function serverSecret(): string {
+  const s = process.env.SSO_SERVER_SECRET
+  if (!s) throw new Error('SSO_SERVER_SECRET 미설정')
+  return s
+}
+
+/** 503 의 Retry-After(초) — 없거나 이상하면 5초, 길어도 10초까지만 기다린다 */
+export function retryAfterSeconds(res: Response): number {
+  const n = Number(res.headers.get('retry-after'))
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 10) : 5
+}
+
+/** 받아 둔 토큰을 버린다 — send-as 가 401 invalid_token 을 돌려주면 부르고 한 번만 다시 받는다. */
+export function dropServerToken(): void {
+  cached = null
+}
+
+export async function getServerToken(): Promise<ServerToken> {
+  if (!PORTAL_ORIGIN || !CLIENT_ID || !process.env.SSO_SERVER_SECRET) {
+    if (!warnedNotConfigured) {
+      warnedNotConfigured = true
+      console.warn('[sso] 서버 토큰 설정값 없음 — SSO_SERVER_SECRET·SSO_CLIENT_ID·PORTAL_URL 을 확인하고 재배포하세요')
+    }
+    return { ok: false, reason: 'not_configured' }
+  }
+  if (cached && cached.expMs - Date.now() > EARLY_MS) return { ok: true, token: cached.token, portalOrigin: PORTAL_ORIGIN }
+  if (Date.now() < rejectedUntil) return { ok: false, reason: 'admin_required' }
+  // 같은 순간의 요청은 하나로 합친다
+  inflight ??= fetchServerToken(PORTAL_ORIGIN).finally(() => {
+    inflight = null
+  })
+  return inflight
+}
+
+async function fetchServerToken(portalOrigin: string): Promise<ServerToken> {
+  let res: Response
+  try {
+    res = await fetch(new URL('/api/sso/token', portalOrigin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      // tenant_id·scope 는 보내지 않는다 — 등록한 회사·시스템 메일 권한이 기본이다
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT_ID, client_secret: serverSecret() }),
+      cache: 'no-store',
+      redirect: 'error', // 다른 주소로 넘어가며 비밀값이 따라가지 않게
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch {
+    console.warn('[sso] 서버 토큰 받기 실패 — 네트워크·시간 초과이거나, PORTAL_URL 이 다른 주소로 넘어가는 옛 주소다(설정값 확인)')
+    return { ok: false, reason: 'retry_later', retryAfterSec: 5 }
+  }
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (res.ok && typeof body.access_token === 'string' && typeof body.expires_in === 'number') {
+    cached = { token: body.access_token, expMs: Date.now() + body.expires_in * 1000 }
+    return { ok: true, token: body.access_token, portalOrigin }
+  }
+  if (res.status >= 500) return { ok: false, reason: 'retry_later', retryAfterSec: retryAfterSeconds(res) }
+  // 거절 사유 코드만 남긴다(값·토큰은 남기지 않는다) — invalid_client = 키가 없거나 그만 씀·회수 · unauthorized_client = 연동 꺼짐·승격 직후 등
+  console.warn(`[sso] 서버 토큰 거절 — ${String(body.error ?? res.status)} ${String(body.error_description ?? '')}`.slice(0, 200))
+  rejectedUntil = Date.now() + REJECTED_MS
+  return { ok: false, reason: 'admin_required' }
+}
+```
+
+### `lib/system-mail.ts` — 시스템 메일 보내기
+
+```ts
+/**
+ * 시스템 메일 보내기 — 로그인한 사람 없이(예약·자동). 서버 전용. pable studio /api/graph/mail/send-as.
+ * 🚫 from 을 보내지 마라(회사 발신 계정으로 고정). fromName 은 앱이 정한 상수다 — 사용자 입력을 넣으면 사칭 메일이 된다.
+ * 받는 사람·제목·내용은 앱이 정한다 — 요청 본문 값을 그대로 넘기지 않는다. 로그인한 사용자가 보내는 메일은 /api/graph/mail/send(본인 명의).
+ */
+import { dropServerToken, getServerToken, retryAfterSeconds } from '@/lib/portal-server-token'
+
+const FROM_NAME = '알림' // ← 앱 이름 등 앱이 정한 상수
+
+export type SystemMailResult =
+  | { ok: true }
+  // admin_required: 키·발신 설정 문제(키 없음·회수, 발신 계정 도메인 회수, 전역 발신 메일 중단) — 다시 해도 같다. message 는 화면에 그대로 보여도 되는 문구
+  // rejected: 호출 설정 오류(허용 도메인 밖 받는 사람 등) — 서버 로그에만 남긴다
+  // retry_later: 확실히 보내지 않았다 — 나중에 다시 보내도 된다
+  // unknown: 보냈는지 모른다(응답 시간 초과·pable studio 502) — 다시 보내면 두 번 갈 수 있다(서버 로그를 보고 사람이 판단)
+  | { ok: false; reason: 'admin_required' | 'rejected' | 'retry_later' | 'unknown'; message?: string }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+export async function sendSystemMail(mail: {
+  to: string[] // 최대 50명 — 넘으면 나눠 보낸다
+  subject: string
+  body: string
+  contentType?: 'Text' | 'HTML' // HTML 은 앱이 정한 메일 틀에만
+}): Promise<SystemMailResult> {
+  let tokenRetried = false
+  let waited = false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const t = await getServerToken()
+    if (!t.ok) {
+      // pable studio 가 잠깐 바쁘면 알려 준 만큼(최대 10초) 한 번 기다렸다 다시 — 하루 1번 예약이면 놓친 메일은 다시 오지 않는다
+      if (t.reason === 'retry_later' && !waited) {
+        waited = true
+        await sleep((t.retryAfterSec ?? 5) * 1000)
+        continue
+      }
+      return { ok: false, reason: t.reason === 'retry_later' ? 'retry_later' : 'admin_required' }
+    }
+    let res: Response
+    try {
+      res = await fetch(`${t.portalOrigin}/api/graph/mail/send-as`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: mail.subject,
+          body: mail.body,
+          contentType: mail.contentType ?? 'Text',
+          to: mail.to,
+          fromName: FROM_NAME,
+        }),
+        cache: 'no-store',
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      })
+    } catch (e) {
+      // 시간 초과는 요청이 이미 갔을 수 있다 — 보냈는지 모른다. 연결 자체가 안 된 경우만 확실히 안 보냈다
+      const timedOut = e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')
+      console.warn(`[mail] 시스템 메일 ${timedOut ? '응답 시간 초과 — 보냈는지 모름' : '연결 실패 — 보내지 않음'}`)
+      return { ok: false, reason: timedOut ? 'unknown' : 'retry_later' }
+    }
+    if (res.ok) return { ok: true }
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    // 받아 둔 토큰이 막 끝났거나 회수됐다 — 버리고 한 번만 다시 받는다(401 은 보내기 전에 거절된 것이라 두 번 가지 않는다)
+    if (res.status === 401 && !tokenRetried && (body.code === 'invalid_token' || body.error === 'invalid_token')) {
+      tokenRetried = true
+      dropServerToken()
+      continue
+    }
+    // 502 = pable studio 가 보내기를 시도한 뒤 실패했다 — 실제로 갔는지 모른다
+    if (res.status === 502) {
+      console.warn('[mail] 시스템 메일 HTTP 502 — 보냈는지 모름')
+      return { ok: false, reason: 'unknown' }
+    }
+    // 503 = 보내기 전에 멈췄다(잠시 확인 불가) — 알려 준 만큼 한 번 기다렸다 다시
+    if (res.status === 503 || body.error === 'system_mail_unavailable') {
+      if (!waited) {
+        waited = true
+        await sleep(retryAfterSeconds(res) * 1000)
+        continue
+      }
+      return { ok: false, reason: 'retry_later' }
+    }
+    if (res.status === 401 || body.error === 'system_mail_from_not_registered' || body.error === 'system_mail_disabled') {
+      const code = typeof body.error === 'string' && body.error.startsWith('system_mail_') ? ` ${body.error}` : ''
+      console.warn(`[mail] 시스템 메일 거절 — HTTP ${res.status}${code}`)
+      return { ok: false, reason: 'admin_required', message: typeof body.message === 'string' ? body.message : undefined }
+    }
+    // 400 의 error 문구엔 받는 사람 주소가 들어 있다 — 상태와 막힌 도메인만 남긴다
+    const blocked = Array.isArray(body.blocked) ? body.blocked.map((a) => String(a).split('@').pop()).join(',') : ''
+    console.warn(`[mail] 시스템 메일 거절 — HTTP ${res.status}${res.status === 403 ? ` ${String(body.error ?? '')}` : ''}${blocked ? ` 막힌 도메인: ${blocked}` : ''}`.slice(0, 300))
+    return { ok: false, reason: 'rejected' }
+  }
+  return { ok: false, reason: 'retry_later' }
+}
+```
+
+### 예약 발송 — `lib/cron-runs.ts` + `app/api/cron/<이름>/route.ts` + `vercel.json`
+
+정해진 시간에 보내려면 Vercel Cron 이 이 주소를 부르게 한다. **`CRON_SECRET` 이 맞을 때만** 보낸다 — Vercel 은 설정값 `CRON_SECRET` 이 있으면
+`Authorization: Bearer <값>` 을 붙여 부른다. `CRON_SECRET` 은 무작위 값으로 만든다 — 웹 채팅은 `manage_env generate_secret`(서버가 만들고 값을 돌려주지 않는다),
+로컬 AI 는 터미널의 `openssl rand -hex 32`(SKILL.md "자동 발송용 키" 절 — 직접 지어내지 않는다) → 재배포.
+
+**같은 메일을 두 번 보내지 않게 표식을 남긴다.** Vercel Cron 은 같은 실행을 두 번 부르거나 건너뛸 수 있고, 실패해도 다시 부르지 않는다.
+표식은 **앱 DB 에** 둔다(서버 메모리는 인스턴스마다 따로라 막지 못한다). 저장 공간(Supabase)이 연결되지 않은 앱이면 먼저 연결한다(supabase-schema 스킬).
+표식 저장 공간은 이렇게 만든다(서버 전용 — 앱 키로는 읽고 쓸 수 없다):
+
+```json
+{
+  "purpose": "예약 발송이 같은 메일을 두 번 보내지 않게 하는 표식",
+  "tables": [{ "name": "cron_runs", "serverOnly": true, "columns": [
+    { "name": "job", "type": "string", "nullable": false },
+    { "name": "run_key", "type": "string", "nullable": false }
+  ] }],
+  "indexes": [{ "table": "cron_runs", "columns": ["job", "run_key"], "unique": true }]
+}
+```
+
+```ts
+// lib/cron-runs.ts — 예약 발송 표식. 서버 전용(service_role). 🚫 'use client'·proxy·middleware 에서 import 하지 마라
+import { createClient } from '@supabase/supabase-js'
+
+function admin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) throw new Error('cron_runs: 저장 공간 설정값 없음')
+  return createClient(url, key, { auth: { persistSession: false } })
+}
+
+/** 처음이면 true(이번 실행이 보낸다), 이미 있으면 false. 그 밖의 오류는 던진다 — "이미 보냄"으로 읽으면 매일 조용히 건너뛴다 */
+export async function claimRun(job: string, runKey: string): Promise<boolean> {
+  const { error } = await admin().from('cron_runs').insert({ job, run_key: runKey })
+  if (!error) return true
+  if (error.code === '23505') return false // 중복 = 이미 보냈다(또는 보내는 중)
+  throw new Error(`cron_runs 기록 실패(${error.code})`)
+}
+
+/** 확실히 보내지 못했을 때만 표식을 지운다 — 다음 실행이 다시 보내게 */
+export async function releaseRun(job: string, runKey: string): Promise<void> {
+  const { error } = await admin().from('cron_runs').delete().eq('job', job).eq('run_key', runKey)
+  if (error) console.warn(`[cron] 표식 지우기 실패(${error.code}) — ${job} ${runKey} 는 다음 실행이 건너뛴다`)
+}
+```
+
+```ts
+// app/api/cron/daily-mail/route.ts (예)
+import { timingSafeEqual } from 'node:crypto'
+import { sendSystemMail } from '@/lib/system-mail'
+import { claimRun, releaseRun } from '@/lib/cron-runs'
+
+/** null = CRON_SECRET 이 없다(열어 두지 않는다) */
+function authorized(req: Request): boolean | null {
+  const secret = process.env.CRON_SECRET
+  if (!secret) return null
+  const got = Buffer.from(req.headers.get('authorization') ?? '')
+  const want = Buffer.from(`Bearer ${secret}`)
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+
+export async function GET(req: Request) {
+  const ok = authorized(req)
+  if (ok === null) return Response.json({ code: 'not_configured' }, { status: 503 })
+  if (!ok) return Response.json({ code: 'unauthorized' }, { status: 401 })
+  const today = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10) // 한국 날짜
+  // ← 먼저 앱 DB 에서 오늘 보낼 묶음을 읽는다(읽기가 실패하면 표식을 남기기 전에 끝난다). 받는 사람은 앱이 정한 목록 — 한 통에 50명까지, 넘으면 묶음을 나눈다
+  const batches: { key: string; to: string[]; subject: string; body: string }[] = [
+    { key: 'team', to: ['team@example.com'], subject: '오늘의 일정', body: '…' },
+  ]
+  let sent = 0
+  for (const b of batches) {
+    const runKey = `${today}:${b.key}`
+    let claimed: boolean
+    try {
+      claimed = await claimRun('daily-mail', runKey) // 묶음마다 표식 — 중간에 실패해도 이미 보낸 묶음은 다시 보내지 않는다
+    } catch (e) {
+      console.warn(`[cron] 표식 확인 실패 — 보내지 않고 끝낸다: ${(e as Error).message}`)
+      return Response.json({ code: 'unavailable', sent }, { status: 503 })
+    }
+    if (!claimed) continue // 이미 보낸 묶음
+    const result = await sendSystemMail({ to: b.to, subject: b.subject, body: b.body })
+    if (result.ok) {
+      sent++
+      continue
+    }
+    // 확실히 못 보냈을 때만 표식을 지워 다음 실행이 다시 보낸다. 보냈는지 모르면(unknown) 남긴다 — 두 번 가는 것보다 낫다
+    if (result.reason !== 'unknown') await releaseRun('daily-mail', runKey)
+    console.warn(`[cron] 시스템 메일 실패 — ${result.reason}${result.message ? ` (${result.message})` : ''}`)
+    // 같은 원인으로 나머지도 실패한다 — 첫 실패에서 멈춘다(남은 묶음은 표식이 없어 다음 실행이 보낸다)
+    return Response.json({ code: result.reason, sent }, { status: result.reason === 'retry_later' ? 503 : 500 })
+  }
+  return Response.json({ ok: true, sent })
+}
+```
+
+```json
+{
+  "crons": [
+    { "path": "/api/cron/daily-mail", "schedule": "0 23 * * *" },
+    { "path": "/api/cron/daily-mail", "schedule": "0 1 * * *" }
+  ]
+}
+```
+
+- **일정은 UTC 다** — 한국 시간 아침 8시 = `0 23 * * *`(전날 23시 UTC). 두 번째 줄(`0 1 * * *` = 한국 10시)은 **같은 날 다시 보내기**다 — 첫 실행이 보냈으면 표식이 있어 건너뛴다.
+  이미 `vercel.json` 이 있으면 `crons` 만 더한다.
+- Vercel Cron 은 **운영 배포에서만** 돈다(미리보기·로컬에서는 돌지 않는다). Vercel 무료(Hobby) 계정은 일정 하나가 하루 1번까지이고 정한 시각의 한 시간 안 어느 때에 돈다 —
+  더 자주 돌게 적으면 배포가 거절된다(일정 줄을 여러 개 두는 것은 된다).
+- 앱에 로그인 가드(Next 16 의 `proxy.ts`, 이전 `middleware.ts`)가 있으면 **`/api/cron/` 을 가드에서 뺀다** — Vercel Cron 은 리다이렉트를 따라가지 않아서,
+  가드가 세션이 없다고 `/auth/sso` 로 보내면 그 실행은 그냥 끝난다(이 주소는 `CRON_SECRET` 이 지킨다). `next.config` 의 `trailingSlash: true` 도 같은 이유로 예약 주소를 막는다(308).
+- 로컬 시험: `curl -H "Authorization: Bearer <로컬 .env 의 CRON_SECRET>" http://localhost:3000/api/cron/daily-mail` — 실제 메일이 나간다(받는 사람을 본인으로 바꿔 시험한다).
+  같은 날 다시 시험하려면 `cron_runs` 의 그 줄을 지운다.
+
 ## 출시 전 체크리스트 (v2)
 
 - [ ] `claim_portal_sso_key` 가 `SSO_CLIENT_ID`·`SSO_CLIENT_SECRET`(+`PORTAL_URL`)를 배선했고, 그 뒤 `request_vercel_deploy` 로 재배포했다
@@ -855,6 +1327,10 @@ export async function deleteItem(id: string) {
 - [ ] 사내 데이터를 부르면 필요한 스코프가 승인됐다(승인 스코프 0개면 본인 조회도 401)
 - [ ] 로컬에서 실제 로그인을 시험하면 등록의 로컬 포트가 띄운 포트와 같고, `DEV_BYPASS_SSO` 가 꺼져 있다
 - [ ] `/login` 이 세션 없이 열린다(공개 페이지) · 로그아웃 링크가 `<a href="/auth/logout">` 이다
+- [ ] 브라우저 저장소·클라이언트 캐시에 사용자 데이터를 두면 키에 `portal_sub` 가 들어 있다(규칙 14)
+- [ ] (자동 발송) `get_portal_registration` 의 `serverKey` 가 `'issued'` 이고 `claim_portal_sso_key` 가 `SSO_SERVER_SECRET` 을 저장했다 → 재배포. 받는 사람은 앱이 정한 목록이다
+- [ ] (자동 발송) 받는 사람·제목·내용을 앱이 정한다 — 로그인한 사용자가 보내는 메일은 본인 명의 발송(`/api/graph/mail/send`)이다 · 미리보기에서도 실제로 나간다고 사용자에게 알렸다
+- [ ] (예약 발송) `CRON_SECRET` 이 있고 예약 주소는 그 값이 맞을 때만 보낸다(없으면 503) · 묶음마다 표식(`cron_runs`, 서버 전용 + 중복 금지)을 남긴다 · 로그인 가드·`trailingSlash` 가 `/api/cron/` 을 막지 않는다 · 일정이 UTC 기준이다
 
 ## 오류 안내 (`/login?error=`)
 
@@ -872,6 +1348,7 @@ export async function deleteItem(id: string) {
 
 | 증상 | 1순위 원인 | 확인·조치 |
 |---|---|---|
+| 사용자가 "[로그인]을 누르면 원하지 않는 계정으로 들어온다"고 한다 | 정상 — 힌트가 없으면 pable studio 가 이 서비스에 기억한 계정, 그것도 없으면 활성 계정으로 발급한다 | 계정을 바꾸고 싶어 하면 위 "계정 바꾸기" 절 |
 | pable studio 화면에 "로그인 연동이 등록되지 않은 서비스예요" | 지금 연 주소(origin)가 등록의 배포 URL·개발 URL·로컬 포트와 다르다, 또는 경로가 `/auth/sso/callback` 이 아니다 | 배포 URL 로 열었는지 확인. 로컬은 pable studio 등록에 **로컬 포트**가 같은 번호로 있어야 한다(PAX 가 비어 있으면 3000 으로 채운다 — 다른 포트면 pable studio 등록 수정에서 바꾼다) |
 | 로컬에서 로그인하면 `/login?error=expired` | 시작 주소와 돌아온 주소의 호스트가 달라 진행 쿠키가 콜백에 실리지 않았다(`127.0.0.1` ↔ `localhost` — 레시피 시작 라우트가 루프백 IP 를 localhost 로 먼저 옮긴다) | `http://localhost:{포트}` 로 연다. 시작 라우트의 `isLoopbackIp` 분기를 지우지 않았는지 확인 |
 | 로그인 직후 `/login?error=failed` | 토큰 검증 실패 — `PORTAL_URL` 이 pable studio 정본 주소(발급자)와 다르다 | `claim_portal_sso_key` 결과가 알려 준 발급자 주소, 또는 pable studio "SSO 키 · 스코프" 창의 "pable studio 주소" 값과 글자 그대로 대조 → 고친 뒤 재배포 |
@@ -880,4 +1357,12 @@ export async function deleteItem(id: string) {
 | 데이터 API 가 `portal_error` 401 | 승인 스코프 0개 · 다른 회사 계정 · DEV_BYPASS | 스코프 승인 상태 확인. mock 은 원래 pable studio API 를 못 부른다 |
 | 로그인 1분 뒤부터 데이터가 `sso_required` · 삭제 같은 동작마다 다시 로그인 | 로그인 유지(refresh) 미발급 | ① pable studio 에서 로그아웃했다가 다시 로그인(오래된 pable studio 로그인·Teams 안에서 시작한 로그인은 로그인 유지를 받지 못한다) ② 그래도 같으면 위 Bearer 절·출시 전 체크리스트 — pable studio 관리자에게 로그인 유지 설정 확인 |
 | 로그인·데이터 호출이 계속 `unavailable`(잠시 후 다시) | `PORTAL_URL` 이 다른 주소로 넘어가는 옛 주소다(비밀값이 따라가지 않게 `redirect: 'error'` 로 끊는다) 또는 pable studio 장애 | 서버 로그 `[sso] pable studio 호출 실패` 확인 → `PORTAL_URL` 을 수령 결과의 발급자 주소로 바꾸고 재배포 |
+| 자동 발송이 `admin_required` 로 멈춘다 · 서버 로그 `[sso] 서버 토큰 거절 — invalid_client` | 자동 발송용 키가 없다·그만 썼다·회수됐다, 또는 키를 재발급한 뒤 옛 값 | `get_portal_registration` 의 `serverKey` 확인 → `'issued'` 면 `claim_portal_sso_key`(재발급했으면 `force: true`) → 재배포. `'none'` 이면 다시 신청해야 한다 |
+| 자동 발송이 `admin_required` 인데 `[sso] 서버 토큰 거절` 로그가 없다 · 로그 `[sso] 서버 토큰 설정값 없음` | `SSO_SERVER_SECRET` 이 없거나 저장 뒤 재배포하지 않았다 | `claim_portal_sso_key` 결과를 확인하고 재배포한다 |
+| 서버 로그 `[sso] 서버 토큰 거절 — unauthorized_client` | `service_unavailable` = SSO 연동이 꺼졌거나 키 승인이 없거나 정식 서비스로 승격된 직후(관리자가 서비스를 켤 때까지), 또는 **등록한 사람이 퇴사·비활성**됐다 · `server_tokens_not_enabled` = 관리자가 이 등록의 로그인 연동을 멈췄다 · `tenant_not_allowed` = 등록한 회사가 아닌 곳에서 받으려 했다 · `tenant_inactive` = 회사 이용 중지 · `network_unverified` = 사내망 전용 서비스(서버 토큰은 늘 막힌다) · `server_tokens_disabled` = pable studio 전체 서버 토큰 중지 | 코드 문제가 아니다 — 등록한 사람이 바뀌었으면 pable studio 관리자에게 등록을 옮겨 달라고, 그 밖엔 서비스 상태 확인을 요청한다 |
+| 서버 로그 `[sso] 서버 토큰 거절 — invalid_scope` | 시스템 메일 권한(`메일 발송 (시스템)`)이 빠졌다 | 사용자가 pable studio 에서 그 권한과 자동 발송용 키를 다시 신청한다 |
+| 로그 `[mail] … 보냈는지 모름` | 응답 시간 초과·pable studio 502 — 실제로 갔을 수도 있다 | 표식을 남겨 다시 보내지 않는다 — 받는 사람에게 확인하고, 안 갔으면 `cron_runs` 의 그 줄을 지운 뒤 예약 주소를 다시 부른다 |
+| 자동 발송이 `admin_required` + `system_mail_from_not_registered` | 회사 시스템 발신 계정의 도메인이 허용 목록에서 빠졌다 | 회사 관리자에게 요청한다(`portal-api.md` send-as 절 — 재시도 금지) |
+| 자동 발송이 `admin_required` + `system_mail_disabled` | pable studio 전체의 시스템 발신 메일이 설정되지 않았다 — **회사 관리자가 아니라 pable studio 운영사**가 고칠 문제다 | 운영사에 알린다(회사가 자기 시스템 발신 계정을 등록해도 그 회사는 풀린다) |
+| 예약 메일이 안 간다 | 일정이 UTC 라 9시간 어긋남 · 운영 배포가 아님 · 무료 플랜 하루 1번 · 로그인 가드(`proxy.ts`·`middleware.ts`)나 `trailingSlash` 가 `/api/cron/` 을 막음 · `CRON_SECRET` 없음(503) · 표식이 남아 건너뜀(로그 `[cron] 표식 지우기 실패`) | 위 원인을 차례로 확인한다(로컬 AI 는 `get_deploy_logs` 로 배포 로그를 볼 수 있다) |
 | pable studio 화면이 "로그인 연동이 등록되지 않은 서비스예요" 인데 주소·포트는 맞다 | 등록된 배포 URL 에 경로가 있다(`https://host/app`) — pable studio 가 돌아갈 주소를 그 경로 아래로 등록했다 | 이 레시피는 도메인 루트 전용(규칙 1) — 앱을 도메인 루트에 배포하고 pable studio 등록의 배포 URL 에서 경로를 뺀다 |

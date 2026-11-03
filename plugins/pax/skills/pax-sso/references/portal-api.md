@@ -12,6 +12,7 @@ SSO 로그인 후 만든 서비스가 **pable studio 데이터(조직·사용자
 - **Bearer 호출 자격** = 비밀값(client secret) 클라이언트 + 승인 스코프 1개 이상 + 토큰 `tenant_id` 가 **등록 회사**. 스코프 0개면 본인 조회까지 401, 다른 회사 계정(운영자 직권 진입 포함)으로 로그인한 세션도 사내 데이터를 부르지 못한다.
 - 토큰은 응답 본문·로그·클라이언트 컴포넌트에 싣지 않는다(서버 라우트 안에서만 쓴다).
 - **사람 없이 부르는 호출(크론·예약 작업·정기 발송)은 이 방식으로 하지 않는다** — 접근 토큰은 로그인한 사람이 있을 때만 받는다. 로그인 유지(refresh)·접근 토큰을 저장해 두고 나중에 쓰지 마라(SKILL.md "사람 없이 자동으로 부르는 기능").
+  사람 없이 할 수 있는 것은 **시스템 메일 발송(`send-as`)뿐**이고, 그때 Bearer 는 **자동 발송용 키(`SSO_SERVER_SECRET`)로 받은 서버 토큰**이다(`sso-v2.md` "자동 발송" 절). 서버 토큰으로 다른 엔드포인트를 부르지 마라(거절된다).
 - (기존 v1 앱의 Bearer 는 `sso-v1.md` §6 — 새 앱에 쓰지 마라.)
 
 ```ts
@@ -50,13 +51,13 @@ const res = await fetch(`${access.portalOrigin}/api/org/users/${encodeURICompone
 | GET | `/api/graph/presence/{email}` | `graph.Presence.Read.All` (**본인 면제**) | 프레즌스 단건 |
 | POST | `/api/graph/presence` | `graph.Presence.Read.All` (면제 없음) | 프레즌스 배치 (최대 650명) |
 | POST | `/api/graph/mail/send` | `graph.Mail.Send` (위임·민감) | 본인 명의 메일 발송 |
-| POST | `/api/graph/mail/send-as` | `graph.Mail.Send.app` (앱·민감) | 시스템 계정 메일 발송 (사용자 로그인 무관) |
+| POST | `/api/graph/mail/send-as` | `graph.Mail.Send.app` (앱·민감) | 시스템 계정 메일 발송 (사용자 로그인 무관 — 사람 접근 토큰 또는 서버 토큰) |
 
 그 외(개발등록 워크플로우 도구용, 일반 앱에선 드묾): GET `/api/contest/registrations`(`portal.DevRegistrations.Read`), POST `/api/admin/dev-registrations/{id}/approve`·`/reject`(Bearer + portalRole ≥ service_manager).
 
 > ⚠️ **여기 없는 Graph 기능은 pable studio가 프록시하지 않는다** — 그룹/팀 멤버(owners·members)·Teams·OneDrive·SharePoint·타인 캘린더/메일 등. 이 경우 "pable studio에서 아직 지원되지 않아요"라고 안내하고 대안을 순서대로 제시한다: ① 전체 구성원 조회(`/api/org/users`) 후 앱에서 필요한 인원만 선별(`graph.User.Read.All` 필요) ② 명단을 엑셀·CSV 로 받아 반영 ③ pable studio 관리자에게 기능 추가 요청. 브라우저에서 복사한 MS 액세스 토큰을 설정값으로 저장하는 우회는 먼저 제안하지 마라(보통 1시간 만료). 직접 Microsoft(Entra) 연동은 사용자가 명시 요청할 때만 — IT 관리자의 앱 등록·승인이 필요함을 안내하고 진행한다.
 
-`graph.*` **위임** 스코프 공통: 대상 사용자가 **pable studio에 최소 1회 로그인**했어야 하고, `/me/*` 는 JWT `sub` 본인 고정(타인 캘린더·메일 조회 불가). `send-as` 만 앱 권한이라 로그인 무관.
+`graph.*` **위임** 스코프 공통: 대상 사용자가 **pable studio에 최소 1회 로그인**했어야 하고, `/me/*` 는 JWT `sub` 본인 고정(타인 캘린더·메일 조회 불가). `send-as` 만 앱 권한이라 로그인 무관 — 로그인한 사람의 접근 토큰으로도, 자동 발송용 키로 받은 서버 토큰으로도 부를 수 있다.
 
 ## 엔드포인트별 핵심 스펙
 
@@ -104,13 +105,16 @@ const res = await fetch(`${access.portalOrigin}/api/org/users/${encodeURICompone
 
 ### POST /api/graph/mail/send-as — 시스템 계정 발송 (앱 스코프)
 
-- `mail/send` 와 동일 body. 사용자 로그인 무관(앱 권한) — 알림·리마인더 등 자동 발송용
-- **`from` 을 보내지 마라.** 발신 계정은 **회사(tenant)별로 pable studio 관리자가 등록**한 시스템 메일 계정으로 고정이고, 주소는 서비스에 공개되지 않는다. 어느 회사 계정이 쓰이는지는 **호출에 쓴 토큰의 `tenant_id` 클레임**이 정한다
-- **에러 분기는 하나만 하라.** 기계로 식별 가능한 값은 `error === "system_mail_from_not_registered"` 뿐이고, 나머지 403 의 `error` 는 한국어 문구(`"허용되지 않은 발신 계정"`·`"허용되지 않은 발신 도메인"`·`"허용되지 않은 replyTo 도메인"`·`"허용되지 않은 수신 도메인"`)라 문자열 비교로 분기하면 문구가 바뀔 때 조용히 깨진다.
-  - `system_mail_from_not_registered` → **회사 설정 미비**(코드 문제 아님, 재시도 금지). 응답 `message` 에 사용자에게 그대로 보여줄 한국어 문구가 담겨 오니 그걸 우선 노출하고, 없으면 `reason` 별로 안내하라:
-    - `not_registered` → "pable studio 관리자에게 요청하세요: **관리자 화면 → 회사 관리 탭 → 회사 행의 ⋯ 메뉴 → '시스템 발신 메일 등록'**"
+- `mail/send` 와 같은 body(`subject`✱·`body`✱·`to`✱ + `contentType`·`cc`·`fromName`·`replyTo`·`replyToName`, `to+cc` 최대 50명). 응답 `{ ok: true, mailSource: "tenant" | "operator" }`. 사용자 로그인 무관(앱 권한) — 알림·리마인더 등 자동 발송용
+- **로그인한 사람 없이 보낼 때**(예약·자동 발송) Bearer 는 자동 발송용 키로 받은 **서버 토큰**이다 — 코드는 `sso-v2.md` "자동 발송" 절(`lib/portal-server-token.ts`·`lib/system-mail.ts`)을 그대로 쓴다. 받는 사람·제목·내용은 앱이 정한다 — **로그인한 사용자가 보내는 메일**(동료에게 보내기·초대 등)은 `send-as` 가 아니라 위 `mail/send`(본인 명의)로 만든다(시스템 메일로 보내면 누가 보냈는지 남지 않는다)
+- **`from` 을 보내지 마라.** 발신 계정은 **회사(tenant)별로 pable studio 관리자가 등록**한 시스템 메일 계정으로 고정이고, 주소는 서비스에 공개되지 않는다. 어느 회사 계정이 쓰이는지는 **호출에 쓴 토큰의 `tenant_id` 클레임**이 정한다. 회사에 등록된 계정이 없으면 운영회사 주소로 대신 보내고(`mailSource: "operator"`) 이때 `fromName` 은 운영회사 이름으로 바뀐다
+- **에러 분기는 아래 세 값으로만 하라.** 기계로 식별 가능한 값은 `error` 의 `system_mail_from_not_registered`·`system_mail_disabled`·`system_mail_unavailable` 뿐이고, 나머지 403 의 `error` 는 한국어 문구(`"허용되지 않은 발신 계정"`·`"허용되지 않은 발신 도메인"`·`"허용되지 않은 replyTo 도메인"`·`"허용되지 않은 수신 도메인"`)라 문자열 비교로 분기하면 문구가 바뀔 때 조용히 깨진다.
+  - `system_mail_from_not_registered`(403) → **회사 설정 미비**(코드 문제 아님, 재시도 금지). 응답 `message` 에 사용자에게 그대로 보여줄 한국어 문구가 담겨 오니 그걸 우선 노출하고, 없으면 `reason` 별로 안내하라:
     - `domain_revoked` → 등록은 돼 있는데 그 주소의 도메인이 회사 허용 도메인에서 빠진 상태다(라벨도 '등록'이 아니라 '변경'). "**회사 관리 탭에서 허용 도메인을 확인한 뒤 ⋯ 메뉴 → '시스템 발신 메일 변경'** 으로 허용 도메인에 속한 주소를 다시 지정해 주세요" 라고 관리자에게 요청
-  - 그 밖의 403 → **호출 설정 오류**(`from` 을 넣었거나, 발신·`replyTo`·수신 도메인이 화이트리스트 밖). 재시도해도 안 풀리니 자동 재시도하지 말고, 응답 `error`(있으면 `blocked[]`)는 **서버 로그에만** 남기고 사용자에겐 "메일 발송이 거부됐어요" 수준으로 끝내라
+    - `not_registered`(예전 pable studio 만 — 지금은 운영회사 주소로 대신 보낸다) → "pable studio 관리자에게 요청하세요: **관리자 화면 → 회사 관리 탭 → 회사 행의 ⋯ 메뉴 → '시스템 발신 메일 등록'**"
+  - `system_mail_disabled`(403) → pable studio 전체의 시스템 발신 메일이 설정되지 않았다(회사 발신 계정도 대신 보낼 운영회사 주소도 없다) — **회사 관리자가 아니라 pable studio 운영사**가 고칠 문제다. 재시도하지 말고 응답 `message` 를 보여 주며 운영사에 알리도록 안내한다(회사가 자기 시스템 발신 계정을 등록해도 그 회사는 풀린다)
+  - `system_mail_unavailable`(503) → 발신 계정을 잠시 확인하지 못했다 — 잠시 뒤 다시 보낸다(예약 발송이면 다음 실행에서)
+  - 그 밖의 403 → **호출 설정 오류**(`from` 을 넣었거나, 발신·`replyTo`·수신 도메인이 화이트리스트 밖 — `"허용되지 않은 발신 계정"` 의 `reason` `from_mismatch`·`fallback_from_not_allowed` 포함). 재시도해도 안 풀리니 자동 재시도하지 말고, 응답 `error`(있으면 `blocked[]`)는 **서버 로그에만** 남기고 사용자에겐 "메일 발송이 거부됐어요" 수준으로 끝내라
 - 서비스별로 바꿀 수 있는 건 **표시 이름·회신 경로뿐**: `fromName: "가입 알림"` + `replyTo: "support@…"` → 수신자에겐 `"가입 알림" <등록된 발신 계정 주소>` 로 보이고 회신은 replyTo 로 간다. `replyTo` 도메인도 화이트리스트 검사 대상
 - ⚠️ **`fromName` 에 최종 사용자 입력을 그대로 넣지 마라.** pable studio는 이 값을 검사 없이 표시 이름으로 쓰므로, 폼 이름란에 `보안팀 <security@회사도메인>` 같은 값이 들어오면 **정상 발신 계정에서 온 사칭 메일**이 만들어진다. 앱이 정한 상수를 쓰고, 굳이 사용자 값을 쓴다면 `<>` 를 제거하고 길이를 제한하라
 - 수신 도메인 화이트리스트 동일 적용. 단 활동 로그에 남는 건 **발신 계정 미등록·도메인 회수·`from` 불일치**로 거부된 호출뿐이다(pable studio 활동 로그 → **시스템 메일** 필터) — 형식·수신 도메인 오류는 기록되지 않으니 관리자에게 "로그를 보라"고 안내하지 마라
